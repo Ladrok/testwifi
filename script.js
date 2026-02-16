@@ -2,6 +2,8 @@
 let testMode = 'quick';
 let isTestRunning = false;
 let latencyData = [];
+let downloadSpeedData = [];
+let uploadSpeedData = [];
 let testResults = {
     download: 0,
     upload: 0,
@@ -44,29 +46,71 @@ function setupEventListeners() {
 async function fetchIPInfo() {
     try {
         console.log('Fetching IP info...');
-        const response = await fetch('https://ipapi.co/json/');
-        const data = await response.json();
+        
+        // Try multiple IP services
+        let data;
+        try {
+            const response = await fetch('https://api.ipify.org?format=json');
+            const ipData = await response.json();
+            
+            // Get detailed info from ipapi
+            const detailResponse = await fetch(`https://ipapi.co/${ipData.ip}/json/`);
+            data = await detailResponse.json();
+        } catch (e) {
+            // Fallback to cloudflare
+            const response = await fetch('https://cloudflare.com/cdn-cgi/trace');
+            const text = await response.text();
+            const lines = text.split('\n');
+            const ipLine = lines.find(l => l.startsWith('ip='));
+            const ip = ipLine ? ipLine.split('=')[1] : 'Unknown';
+            
+            const detailResponse = await fetch(`https://ipapi.co/${ip}/json/`);
+            data = await detailResponse.json();
+        }
         
         console.log('IP info received:', data);
         
-        document.getElementById('ip-address').textContent = data.ip || 'Bilinmiyor';
-        document.getElementById('isp').textContent = (data.org || 'Bilinmiyor').substring(0, 30);
-        document.getElementById('location').textContent = `${data.city}, ${data.country_name}` || 'Bilinmiyor';
-        document.getElementById('server-location').textContent = `${data.city}, ${data.country_name}`;
+        // Display IP address clearly
+        const ipAddress = data.ip || 'Bilinmiyor';
+        document.getElementById('ip-address').textContent = ipAddress;
+        console.log('Your IP:', ipAddress);
+        
+        // ISP name (remove AS number if present)
+        let ispName = data.org || data.isp || 'Bilinmiyor';
+        if (ispName.includes('AS')) {
+            ispName = ispName.replace(/^AS\d+\s+/, '');
+        }
+        document.getElementById('isp').textContent = ispName.substring(0, 35);
+        
+        // Location
+        const location = data.city && data.country_name 
+            ? `${data.city}, ${data.country_name}` 
+            : 'Bilinmiyor';
+        document.getElementById('location').textContent = location;
+        document.getElementById('server-location').textContent = location;
         
         // Get connection type
         const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        let connectionType = 'Ethernet/WiFi';
+        
         if (connection) {
-            document.getElementById('connection-type').textContent = connection.effectiveType.toUpperCase();
-        } else {
-            document.getElementById('connection-type').textContent = 'Unknown';
+            const type = connection.effectiveType || connection.type;
+            if (type === '4g') connectionType = '4G Mobile';
+            else if (type === '3g') connectionType = '3G Mobile';
+            else if (type === 'slow-2g' || type === '2g') connectionType = '2G Mobile';
+            else if (type === 'wifi') connectionType = 'WiFi';
+            else if (type === 'ethernet') connectionType = 'Ethernet';
+            else connectionType = type ? type.toUpperCase() : 'Broadband';
         }
+        
+        document.getElementById('connection-type').textContent = connectionType;
+        
     } catch (error) {
         console.error('IP bilgisi alınamadı:', error);
         document.getElementById('ip-address').textContent = 'Tespit edilemedi';
         document.getElementById('isp').textContent = 'Bilinmiyor';
         document.getElementById('location').textContent = 'Bilinmiyor';
-        document.getElementById('connection-type').textContent = 'Unknown';
+        document.getElementById('connection-type').textContent = 'Bilinmiyor';
     }
 }
 
@@ -149,6 +193,8 @@ async function startTest() {
     
     // Reset values
     latencyData = [];
+    downloadSpeedData = [];
+    uploadSpeedData = [];
     testResults = { download: 0, upload: 0, ping: 0, jitter: 0, packetLoss: 0 };
     
     // Reset UI
@@ -158,6 +204,13 @@ async function startTest() {
     document.getElementById('jitter-value').textContent = '-- ms';
     document.getElementById('current-speed').textContent = '0';
     drawSpeedometer(0, 500);
+    
+    // Clear visualizer
+    const canvas = document.getElementById('speed-canvas');
+    if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
     
     const config = testConfig[testMode];
     const startTime = Date.now();
@@ -296,16 +349,20 @@ function runDownloadTest(duration) {
         let lastUpdate = Date.now();
         let iteration = 0;
         
-        const testSizes = [5, 10, 25, 50, 100]; // MB
+        // Larger test sizes for more accurate results
+        const testSizes = [10, 25, 50, 100]; // MB
         let currentSizeIndex = 0;
         
         function downloadIteration() {
             if (Date.now() - startTime > duration * 1000 || !isTestRunning) {
-                // Calculate final result
+                // Calculate final result - use median of best measurements
                 if (measurements.length > 0) {
-                    const avgSpeed = measurements.slice(-10).reduce((a, b) => a + b, 0) / Math.min(10, measurements.length);
+                    const sortedMeasurements = measurements.sort((a, b) => b - a);
+                    const topMeasurements = sortedMeasurements.slice(0, Math.min(10, sortedMeasurements.length));
+                    const avgSpeed = topMeasurements.reduce((a, b) => a + b, 0) / topMeasurements.length;
                     testResults.download = avgSpeed;
                     document.getElementById('download-speed').textContent = `${avgSpeed.toFixed(2)} Mbps`;
+                    console.log(`Final Download: ${avgSpeed.toFixed(2)} Mbps`);
                 }
                 resolve();
                 return;
@@ -318,6 +375,7 @@ function runDownloadTest(duration) {
             const dlStart = Date.now();
             let lastLoaded = 0;
             let lastTime = dlStart;
+            let chunkMeasurements = [];
             
             xhr.open('GET', url + '&r=' + Math.random(), true);
             xhr.responseType = 'arraybuffer';
@@ -332,23 +390,23 @@ function runDownloadTest(duration) {
                 const now = Date.now();
                 const timeDiff = (now - lastTime) / 1000;
                 
-                if (timeDiff > 0.1 && e.loaded > lastLoaded) {
+                if (timeDiff > 0.05 && e.loaded > lastLoaded) {
                     const bytesDiff = e.loaded - lastLoaded;
                     const speedMbps = (bytesDiff * 8) / (timeDiff * 1000000);
                     
-                    if (speedMbps > 0.1 && speedMbps < 2000) {
+                    if (speedMbps > 0.5 && speedMbps < 2000) {
+                        chunkMeasurements.push(speedMbps);
                         measurements.push(speedMbps);
                         
-                        // Get average of last 5 measurements
-                        const recent = measurements.slice(-5);
-                        const avgSpeed = recent.reduce((a, b) => a + b, 0) / recent.length;
+                        // Get peak speed from recent measurements
+                        const recent = measurements.slice(-8);
+                        const peakSpeed = Math.max(...recent);
                         
-                        testResults.download = avgSpeed;
-                        document.getElementById('download-speed').textContent = `${avgSpeed.toFixed(2)} Mbps`;
-                        document.getElementById('current-speed').textContent = avgSpeed.toFixed(0);
-                        drawSpeedometer(avgSpeed, 500);
-                        
-                        console.log(`Download: ${avgSpeed.toFixed(2)} Mbps`);
+                        testResults.download = peakSpeed;
+                        document.getElementById('download-speed').textContent = `${peakSpeed.toFixed(2)} Mbps`;
+                        document.getElementById('current-speed').textContent = peakSpeed.toFixed(0);
+                        drawSpeedometer(peakSpeed, 500);
+                        updateVisualizer('download', peakSpeed);
                     }
                     
                     lastLoaded = e.loaded;
@@ -359,13 +417,13 @@ function runDownloadTest(duration) {
             xhr.onload = () => {
                 iteration++;
                 // Increase file size if getting good speeds
-                if (measurements.length > 3) {
-                    const recentAvg = measurements.slice(-3).reduce((a, b) => a + b, 0) / 3;
-                    if (recentAvg > 20 && currentSizeIndex < testSizes.length - 1) {
+                if (measurements.length > 5) {
+                    const recentAvg = measurements.slice(-5).reduce((a, b) => a + b, 0) / 5;
+                    if (recentAvg > 30 && currentSizeIndex < testSizes.length - 1) {
                         currentSizeIndex++;
                     }
                 }
-                setTimeout(downloadIteration, 100);
+                setTimeout(downloadIteration, 50);
             };
             
             xhr.onerror = () => {
@@ -389,16 +447,20 @@ function runUploadTest(duration) {
         const startTime = Date.now();
         let iteration = 0;
         
-        const testSizes = [1, 2, 5, 10]; // MB
+        // Larger test sizes for upload
+        const testSizes = [2, 5, 10, 20]; // MB
         let currentSizeIndex = 0;
         
         function uploadIteration() {
             if (Date.now() - startTime > duration * 1000 || !isTestRunning) {
-                // Calculate final result
+                // Calculate final result - use peak measurements
                 if (measurements.length > 0) {
-                    const avgSpeed = measurements.slice(-8).reduce((a, b) => a + b, 0) / Math.min(8, measurements.length);
+                    const sortedMeasurements = measurements.sort((a, b) => b - a);
+                    const topMeasurements = sortedMeasurements.slice(0, Math.min(8, sortedMeasurements.length));
+                    const avgSpeed = topMeasurements.reduce((a, b) => a + b, 0) / topMeasurements.length;
                     testResults.upload = avgSpeed;
                     document.getElementById('upload-speed').textContent = `${avgSpeed.toFixed(2)} Mbps`;
+                    console.log(`Final Upload: ${avgSpeed.toFixed(2)} Mbps`);
                 }
                 resolve();
                 return;
@@ -415,6 +477,7 @@ function runUploadTest(duration) {
             const ulStart = Date.now();
             let lastLoaded = 0;
             let lastTime = ulStart;
+            let chunkMeasurements = [];
             
             xhr.open('POST', url, true);
             
@@ -428,23 +491,25 @@ function runUploadTest(duration) {
                 const now = Date.now();
                 const timeDiff = (now - lastTime) / 1000;
                 
-                if (timeDiff > 0.1 && e.loaded > lastLoaded) {
+                if (timeDiff > 0.05 && e.loaded > lastLoaded) {
                     const bytesDiff = e.loaded - lastLoaded;
                     const speedMbps = (bytesDiff * 8) / (timeDiff * 1000000);
                     
-                    if (speedMbps > 0.1 && speedMbps < 1000) {
+                    if (speedMbps > 0.5 && speedMbps < 1000) {
+                        chunkMeasurements.push(speedMbps);
                         measurements.push(speedMbps);
                         
-                        // Get average of last 5 measurements
-                        const recent = measurements.slice(-5);
-                        const avgSpeed = recent.reduce((a, b) => a + b, 0) / recent.length;
+                        // Get peak speed from recent measurements
+                        const recent = measurements.slice(-8);
+                        const peakSpeed = Math.max(...recent);
                         
-                        testResults.upload = avgSpeed;
-                        document.getElementById('upload-speed').textContent = `${avgSpeed.toFixed(2)} Mbps`;
-                        document.getElementById('current-speed').textContent = avgSpeed.toFixed(0);
-                        drawSpeedometer(avgSpeed, 200);
+                        testResults.upload = peakSpeed;
+                        document.getElementById('upload-speed').textContent = `${peakSpeed.toFixed(2)} Mbps`;
+                        document.getElementById('current-speed').textContent = peakSpeed.toFixed(0);
+                        drawSpeedometer(peakSpeed, 200);
+                        updateVisualizer('upload', peakSpeed);
                         
-                        console.log(`Upload: ${avgSpeed.toFixed(2)} Mbps`);
+                        console.log(`Upload: ${peakSpeed.toFixed(2)} Mbps`);
                     }
                     
                     lastLoaded = e.loaded;
@@ -454,14 +519,16 @@ function runUploadTest(duration) {
             
             xhr.onload = () => {
                 iteration++;
+                console.log(`Upload iteration ${iteration} completed`);
+                
                 // Increase file size if getting good speeds
-                if (measurements.length > 3) {
-                    const recentAvg = measurements.slice(-3).reduce((a, b) => a + b, 0) / 3;
-                    if (recentAvg > 15 && currentSizeIndex < testSizes.length - 1) {
+                if (measurements.length > 5) {
+                    const recentAvg = measurements.slice(-5).reduce((a, b) => a + b, 0) / 5;
+                    if (recentAvg > 20 && currentSizeIndex < testSizes.length - 1) {
                         currentSizeIndex++;
                     }
                 }
-                setTimeout(uploadIteration, 100);
+                setTimeout(uploadIteration, 50);
             };
             
             xhr.onerror = () => {
@@ -668,6 +735,117 @@ function toggleStats() {
     } else {
         content.classList.add('active');
         btn.textContent = '▲';
+    }
+}
+
+// Update Speed Visualizer
+function updateVisualizer(type, speed) {
+    if (type === 'download') {
+        downloadSpeedData.push(speed);
+    } else if (type === 'upload') {
+        uploadSpeedData.push(speed);
+    }
+    
+    drawSpeedVisualizer();
+}
+
+// Draw Speed Visualizer
+function drawSpeedVisualizer() {
+    const canvas = document.getElementById('speed-canvas');
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+    
+    const padding = 50;
+    const graphWidth = width - 2 * padding;
+    const graphHeight = height - 2 * padding;
+    
+    // Combine all data to find max
+    const allData = [...downloadSpeedData, ...uploadSpeedData];
+    if (allData.length === 0) return;
+    
+    const maxSpeed = Math.max(...allData, 10);
+    const maxDataPoints = Math.max(downloadSpeedData.length, uploadSpeedData.length);
+    
+    // Draw grid
+    ctx.strokeStyle = '#2a3547';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+        const y = padding + (graphHeight * i / 4);
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(width - padding, y);
+        ctx.stroke();
+    }
+    
+    // Draw Y-axis labels
+    ctx.fillStyle = '#8892a6';
+    ctx.font = '11px JetBrains Mono';
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+        const y = padding + (graphHeight * i / 4);
+        const value = maxSpeed - (maxSpeed * i / 4);
+        ctx.fillText(`${value.toFixed(0)}`, padding - 10, y + 4);
+    }
+    
+    // Draw X-axis label
+    ctx.textAlign = 'center';
+    ctx.fillText('Zaman (sn)', width / 2, height - 10);
+    
+    // Draw Y-axis label
+    ctx.save();
+    ctx.translate(15, height / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('Hız (Mbps)', 0, 0);
+    ctx.restore();
+    
+    // Draw download line
+    if (downloadSpeedData.length > 1) {
+        ctx.strokeStyle = '#00f0ff';
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#00f0ff';
+        ctx.beginPath();
+        
+        downloadSpeedData.forEach((speed, i) => {
+            const x = padding + (graphWidth * i / Math.max(maxDataPoints - 1, 1));
+            const y = padding + graphHeight - (graphHeight * speed / maxSpeed);
+            
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        });
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+    }
+    
+    // Draw upload line
+    if (uploadSpeedData.length > 1) {
+        ctx.strokeStyle = '#ff00ff';
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#ff00ff';
+        ctx.beginPath();
+        
+        uploadSpeedData.forEach((speed, i) => {
+            const x = padding + (graphWidth * i / Math.max(maxDataPoints - 1, 1));
+            const y = padding + graphHeight - (graphHeight * speed / maxSpeed);
+            
+            if (i === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+        });
+        ctx.stroke();
+        ctx.shadowBlur = 0;
     }
 }
 

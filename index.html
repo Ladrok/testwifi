@@ -2,48 +2,195 @@
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
-    <title>NET-MONITOR ULTIMATE</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetSpeed Pro - İnternet Hız Testi</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Orbitron:wght@600;700;900&display=swap" rel="stylesheet">
 </head>
 <body>
+    <div class="background-grid"></div>
+    <div class="noise-overlay"></div>
+    
     <div class="container">
-        <div class="info-bar">
-            <div class="info-item">IP: <span id="ip-addr">Yükleniyor...</span></div>
-            <div class="info-item">KONUM: <span id="location">...</span></div>
-            <div class="info-item">ISS: <span id="isp">...</span></div>
-        </div>
-
-        <div class="analyzer-box">
-            <canvas id="liveChart"></canvas>
-            <div class="overlay-text" id="status-text">SİSTEM HAZIR</div>
-        </div>
-
-        <div class="stats-grid">
-            <div class="card dl">
-                <div class="label">DOWNLOAD</div>
-                <div class="value" id="dl-val">0.00</div>
-                <div class="unit">Mbps</div>
+        <!-- Header -->
+        <header class="header">
+            <h1 class="logo">
+                <span class="logo-icon">◆</span>
+                NetSpeed<span class="accent">Pro</span>
+            </h1>
+            <div class="header-info">
+                <div class="info-item">
+                    <span class="label">IP</span>
+                    <span class="value" id="ip-address">Yükleniyor...</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">ISP</span>
+                    <span class="value" id="isp">Yükleniyor...</span>
+                </div>
+                <div class="info-item">
+                    <span class="label">KONUM</span>
+                    <span class="value" id="location">Yükleniyor...</span>
+                </div>
             </div>
-            <div class="card ul">
-                <div class="label">UPLOAD</div>
-                <div class="value" id="ul-val">0.00</div>
-                <div class="unit">Mbps</div>
-            </div>
-            <div class="card ping">
-                <div class="label">PING / JITTER</div>
-                <div class="value" id="ping-val">0 / 0</div>
-                <div class="unit">ms</div>
-            </div>
-        </div>
+        </header>
 
-        <div class="controls">
-            <button id="start-btn" onclick="startFullTest()">ANALİZİ BAŞLAT</button>
-        </div>
+        <!-- Main Test Area -->
+        <main class="main-content">
+            <div class="test-display">
+                <div class="test-circle">
+                    <canvas id="speedometer" width="400" height="400"></canvas>
+                    <div class="test-value">
+                        <span class="speed-number" id="current-speed">0</span>
+                        <span class="speed-unit">Mbps</span>
+                    </div>
+                    <div class="test-status" id="test-status">Teste hazır</div>
+                </div>
 
-        <div class="terminal" id="logs">
-            <div class="line">> [SYSTEM] Bağlantı analizi için hazır.</div>
-        </div>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-icon">↓</div>
+                        <div class="metric-info">
+                            <div class="metric-label">Download</div>
+                            <div class="metric-value" id="download-speed">-- Mbps</div>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">↑</div>
+                        <div class="metric-info">
+                            <div class="metric-label">Upload</div>
+                            <div class="metric-value" id="upload-speed">-- Mbps</div>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">◈</div>
+                        <div class="metric-info">
+                            <div class="metric-label">Ping</div>
+                            <div class="metric-value" id="ping-value">-- ms</div>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-icon">≋</div>
+                        <div class="metric-info">
+                            <div class="metric-label">Jitter</div>
+                            <div class="metric-value" id="jitter-value">-- ms</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Test Modes -->
+            <div class="test-modes">
+                <button class="mode-btn active" data-mode="quick">
+                    <span class="mode-icon">⚡</span>
+                    <span class="mode-name">Hızlı Test</span>
+                    <span class="mode-time">~10 sn</span>
+                </button>
+                <button class="mode-btn" data-mode="normal">
+                    <span class="mode-icon">◆</span>
+                    <span class="mode-name">Normal Test</span>
+                    <span class="mode-time">~30 sn</span>
+                </button>
+                <button class="mode-btn" data-mode="extended">
+                    <span class="mode-icon">◉</span>
+                    <span class="mode-name">Uzun Test</span>
+                    <span class="mode-time">~60 sn</span>
+                </button>
+            </div>
+
+            <!-- Start Button -->
+            <button class="start-button" id="start-test">
+                <span class="btn-text">Testi Başlat</span>
+                <span class="btn-glow"></span>
+            </button>
+
+            <!-- Advanced Stats -->
+            <div class="advanced-stats">
+                <div class="stats-header">
+                    <h2>Gelişmiş İstatistikler</h2>
+                    <button class="toggle-stats" id="toggle-stats">▼</button>
+                </div>
+                <div class="stats-content" id="stats-content">
+                    <div class="stats-row">
+                        <div class="stat-item">
+                            <span class="stat-label">Paket Kaybı</span>
+                            <span class="stat-value" id="packet-loss">--%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Gaming Latency</span>
+                            <span class="stat-value" id="gaming-latency">-- ms</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Bufferbloat</span>
+                            <span class="stat-value" id="bufferbloat">--</span>
+                        </div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-item">
+                            <span class="stat-label">Server</span>
+                            <span class="stat-value" id="server-location">--</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Bağlantı Tipi</span>
+                            <span class="stat-value" id="connection-type">--</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Test Süresi</span>
+                            <span class="stat-value" id="test-duration">-- sn</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Gaming Performance -->
+                    <div class="gaming-section">
+                        <h3>Gaming Performance</h3>
+                        <div class="gaming-grid">
+                            <div class="game-stat">
+                                <div class="game-name">FPS Games</div>
+                                <div class="game-rating" id="fps-rating">
+                                    <div class="rating-bar"></div>
+                                    <span class="rating-text">--</span>
+                                </div>
+                            </div>
+                            <div class="game-stat">
+                                <div class="game-name">MOBA Games</div>
+                                <div class="game-rating" id="moba-rating">
+                                    <div class="rating-bar"></div>
+                                    <span class="rating-text">--</span>
+                                </div>
+                            </div>
+                            <div class="game-stat">
+                                <div class="game-name">Battle Royale</div>
+                                <div class="game-rating" id="br-rating">
+                                    <div class="rating-bar"></div>
+                                    <span class="rating-text">--</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Latency Graph -->
+                    <div class="latency-section">
+                        <h3>Lag Spike Analizi</h3>
+                        <div class="latency-graph" id="latency-graph">
+                            <canvas id="latency-canvas" width="800" height="200"></canvas>
+                        </div>
+                        <div class="spike-info">
+                            <span>Tespit Edilen Spike: <strong id="spike-count">0</strong></span>
+                            <span>Maksimum Ping: <strong id="max-ping">-- ms</strong></span>
+                            <span>Minimum Ping: <strong id="min-ping">-- ms</strong></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>NetSpeed Pro v2.0 | Hassas İnternet Hız Testi</p>
+        </footer>
     </div>
+
     <script src="script.js"></script>
 </body>
 </html>

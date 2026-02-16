@@ -12,9 +12,9 @@ let testResults = {
 
 // Test Configuration
 const testConfig = {
-    quick: { duration: 10, samples: 20 },
-    normal: { duration: 30, samples: 50 },
-    extended: { duration: 60, samples: 100 }
+    quick: { duration: 8, samples: 15 },
+    normal: { duration: 20, samples: 40 },
+    extended: { duration: 45, samples: 80 }
 };
 
 // Initialize
@@ -189,37 +189,57 @@ async function runPingTest(samples) {
     
     for (let i = 0; i < samples && isTestRunning; i++) {
         const ping = await measurePing();
-        pings.push(ping);
-        latencyData.push(ping);
         
-        const avgPing = pings.reduce((a, b) => a + b, 0) / pings.length;
-        document.getElementById('ping-value').textContent = `${avgPing.toFixed(0)} ms`;
-        
-        // Calculate jitter
-        if (pings.length > 1) {
-            const jitter = calculateJitter(pings);
-            document.getElementById('jitter-value').textContent = `${jitter.toFixed(1)} ms`;
+        // Filter out obvious errors
+        if (ping < 500) {
+            pings.push(ping);
+            latencyData.push(ping);
+            
+            const avgPing = pings.reduce((a, b) => a + b, 0) / pings.length;
+            document.getElementById('ping-value').textContent = `${avgPing.toFixed(0)} ms`;
+            
+            // Calculate jitter
+            if (pings.length > 1) {
+                const jitter = calculateJitter(pings);
+                document.getElementById('jitter-value').textContent = `${jitter.toFixed(1)} ms`;
+            }
+            
+            drawLatencyGraph();
         }
         
-        drawLatencyGraph();
-        await sleep(100);
+        await sleep(50); // Faster ping interval
     }
     
-    testResults.ping = pings.reduce((a, b) => a + b, 0) / pings.length;
-    testResults.jitter = calculateJitter(pings);
+    if (pings.length > 0) {
+        testResults.ping = pings.reduce((a, b) => a + b, 0) / pings.length;
+        testResults.jitter = calculateJitter(pings);
+    }
 }
 
 async function measurePing() {
+    const pingUrls = [
+        'https://cloudflare.com/cdn-cgi/trace',
+        'https://1.1.1.1/cdn-cgi/trace',
+        'https://www.google.com/generate_204'
+    ];
+    
+    const url = pingUrls[Math.floor(Math.random() * pingUrls.length)];
     const start = performance.now();
+    
     try {
-        // Use a lightweight endpoint for ping
-        await fetch('https://www.google.com/favicon.ico', { 
-            method: 'HEAD', 
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        
+        await fetch(url + '?t=' + Date.now(), { 
+            method: 'GET',
             cache: 'no-cache',
-            mode: 'no-cors'
+            signal: controller.signal
         });
-        return performance.now() - start;
-    } catch {
+        
+        clearTimeout(timeoutId);
+        const ping = performance.now() - start;
+        return Math.max(1, ping); // Minimum 1ms
+    } catch (error) {
         return 999; // Error ping
     }
 }
@@ -237,37 +257,87 @@ function calculateJitter(pings) {
 async function runDownloadTest(duration) {
     updateStatus('Download hızı ölçülüyor...');
     
-    const testFile = 'https://speed.cloudflare.com/__down?bytes=';
-    const fileSizes = [1000000, 5000000, 10000000]; // 1MB, 5MB, 10MB
+    // Use multiple test file sources
+    const testFiles = [
+        'https://proof.ovh.net/files/10Mb.dat',
+        'https://proof.ovh.net/files/100Mb.dat',
+        'https://bouygues.testdebit.info/10M.iso',
+        'https://bouygues.testdebit.info/100M.iso'
+    ];
+    
     let totalBytes = 0;
+    let measurements = [];
     const startTime = Date.now();
     const endTime = startTime + (duration * 1000);
+    let currentFileIndex = 0;
     
     while (Date.now() < endTime && isTestRunning) {
-        for (const size of fileSizes) {
-            if (Date.now() >= endTime || !isTestRunning) break;
+        const testUrl = testFiles[currentFileIndex % testFiles.length];
+        const iterStart = Date.now();
+        
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
             
-            const iterStart = Date.now();
-            try {
-                const response = await fetch(testFile + size, { cache: 'no-cache' });
-                await response.arrayBuffer();
-                const iterEnd = Date.now();
-                const iterTime = (iterEnd - iterStart) / 1000; // seconds
-                totalBytes += size;
+            const response = await fetch(testUrl + '?t=' + Date.now(), { 
+                cache: 'no-cache',
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            const reader = response.body.getReader();
+            let receivedBytes = 0;
+            
+            while (true) {
+                const { done, value } = await reader.read();
                 
-                // Calculate current speed
-                const elapsedTime = (iterEnd - startTime) / 1000;
-                const speedMbps = (totalBytes * 8) / (elapsedTime * 1000000);
+                if (done || Date.now() >= endTime || !isTestRunning) {
+                    break;
+                }
                 
-                testResults.download = speedMbps;
-                document.getElementById('download-speed').textContent = `${speedMbps.toFixed(2)} Mbps`;
-                document.getElementById('current-speed').textContent = speedMbps.toFixed(0);
-                drawSpeedometer(speedMbps, 500);
+                receivedBytes += value.length;
+                totalBytes += value.length;
                 
-            } catch (error) {
+                // Update UI every 100ms
+                if (receivedBytes % (100000) < value.length) {
+                    const elapsed = (Date.now() - startTime) / 1000;
+                    const speedMbps = ((totalBytes * 8) / elapsed) / 1000000;
+                    measurements.push(speedMbps);
+                    
+                    // Use weighted average of recent measurements
+                    const recentMeasurements = measurements.slice(-10);
+                    const avgSpeed = recentMeasurements.reduce((a, b) => a + b, 0) / recentMeasurements.length;
+                    
+                    testResults.download = avgSpeed;
+                    document.getElementById('download-speed').textContent = `${avgSpeed.toFixed(2)} Mbps`;
+                    document.getElementById('current-speed').textContent = avgSpeed.toFixed(0);
+                    drawSpeedometer(avgSpeed, 500);
+                }
+            }
+            
+        } catch (error) {
+            if (error.name !== 'AbortError') {
                 console.error('Download error:', error);
             }
+            currentFileIndex++;
         }
+        
+        // Switch to larger file if speed is high
+        if (measurements.length > 5) {
+            const avgSpeed = measurements.slice(-5).reduce((a, b) => a + b, 0) / 5;
+            if (avgSpeed > 50) {
+                currentFileIndex = 1; // Use larger files
+            }
+        }
+    }
+    
+    // Final calculation
+    if (measurements.length > 0) {
+        const validMeasurements = measurements.filter(m => m > 0 && m < 1000);
+        const finalSpeed = validMeasurements.slice(-20).reduce((a, b) => a + b, 0) / validMeasurements.slice(-20).length;
+        testResults.download = finalSpeed;
+        document.getElementById('download-speed').textContent = `${finalSpeed.toFixed(2)} Mbps`;
     }
 }
 
@@ -275,43 +345,91 @@ async function runDownloadTest(duration) {
 async function runUploadTest(duration) {
     updateStatus('Upload hızı ölçülüyor...');
     
-    const uploadUrl = 'https://speed.cloudflare.com/__up';
-    const chunkSize = 1000000; // 1MB chunks
+    // Upload test endpoints that accept POST
+    const uploadUrls = [
+        'https://bouygues.testdebit.info/upload.php',
+        'https://proof.ovh.net/upload.php'
+    ];
+    
     let totalBytes = 0;
+    let measurements = [];
     const startTime = Date.now();
     const endTime = startTime + (duration * 1000);
+    let urlIndex = 0;
+    
+    // Start with smaller chunks, increase based on speed
+    let chunkSize = 500000; // 500KB
     
     while (Date.now() < endTime && isTestRunning) {
-        const iterStart = Date.now();
-        const data = new Uint8Array(chunkSize);
+        const uploadUrl = uploadUrls[urlIndex % uploadUrls.length];
         
-        // Fill with random data
-        for (let i = 0; i < chunkSize; i++) {
-            data[i] = Math.floor(Math.random() * 256);
-        }
+        // Generate random data
+        const data = new Uint8Array(chunkSize);
+        crypto.getRandomValues(data);
+        
+        const iterStart = Date.now();
         
         try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            
+            const formData = new FormData();
+            formData.append('file', new Blob([data]), 'test.dat');
+            
             await fetch(uploadUrl, {
                 method: 'POST',
-                body: data,
+                body: formData,
+                signal: controller.signal,
                 cache: 'no-cache'
             });
             
+            clearTimeout(timeoutId);
+            
             const iterEnd = Date.now();
-            totalBytes += chunkSize;
+            const iterTime = (iterEnd - iterStart) / 1000;
             
-            // Calculate current speed
-            const elapsedTime = (iterEnd - startTime) / 1000;
-            const speedMbps = (totalBytes * 8) / (elapsedTime * 1000000);
-            
-            testResults.upload = speedMbps;
-            document.getElementById('upload-speed').textContent = `${speedMbps.toFixed(2)} Mbps`;
-            document.getElementById('current-speed').textContent = speedMbps.toFixed(0);
-            drawSpeedometer(speedMbps, 200);
+            if (iterTime > 0.1) { // Only count if took more than 100ms
+                totalBytes += chunkSize;
+                
+                // Calculate speed
+                const elapsedTime = (iterEnd - startTime) / 1000;
+                const speedMbps = ((totalBytes * 8) / elapsedTime) / 1000000;
+                measurements.push(speedMbps);
+                
+                // Use weighted average
+                const recentMeasurements = measurements.slice(-8);
+                const avgSpeed = recentMeasurements.reduce((a, b) => a + b, 0) / recentMeasurements.length;
+                
+                testResults.upload = avgSpeed;
+                document.getElementById('upload-speed').textContent = `${avgSpeed.toFixed(2)} Mbps`;
+                document.getElementById('current-speed').textContent = avgSpeed.toFixed(0);
+                drawSpeedometer(avgSpeed, 200);
+                
+                // Adjust chunk size based on speed
+                if (measurements.length > 3) {
+                    const recentAvg = measurements.slice(-3).reduce((a, b) => a + b, 0) / 3;
+                    if (recentAvg > 20 && chunkSize < 2000000) {
+                        chunkSize = 1000000; // 1MB
+                    } else if (recentAvg > 50 && chunkSize < 5000000) {
+                        chunkSize = 2000000; // 2MB
+                    }
+                }
+            }
             
         } catch (error) {
-            console.error('Upload error:', error);
+            if (error.name !== 'AbortError') {
+                console.error('Upload error:', error);
+            }
+            urlIndex++;
         }
+    }
+    
+    // Final calculation
+    if (measurements.length > 0) {
+        const validMeasurements = measurements.filter(m => m > 0 && m < 500);
+        const finalSpeed = validMeasurements.slice(-15).reduce((a, b) => a + b, 0) / validMeasurements.slice(-15).length;
+        testResults.upload = finalSpeed;
+        document.getElementById('upload-speed').textContent = `${finalSpeed.toFixed(2)} Mbps`;
     }
 }
 

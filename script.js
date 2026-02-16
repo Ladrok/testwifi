@@ -1,657 +1,660 @@
-// Global Variables
-let testMode = 'quick';
-let isTestRunning = false;
-let latencyData = [];
-let testResults = {
-    download: 0,
-    upload: 0,
-    ping: 0,
-    jitter: 0,
-    packetLoss: 0
-};
-
-// Test Configuration
-const testConfig = {
-    quick: { duration: 8, samples: 15 },
-    normal: { duration: 20, samples: 40 },
-    extended: { duration: 45, samples: 80 }
-};
-
-// Initialize
-document.addEventListener('DOMContentLoaded', () => {
-    fetchIPInfo();
-    initializeCanvas();
-    setupEventListeners();
-});
-
-// Event Listeners
-function setupEventListeners() {
-    document.getElementById('start-test').addEventListener('click', startTest);
-    document.getElementById('toggle-stats').addEventListener('click', toggleStats);
-    
-    document.querySelectorAll('.mode-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-            e.currentTarget.classList.add('active');
-            testMode = e.currentTarget.dataset.mode;
-        });
-    });
+:root {
+    --bg-primary: #0a0e1a;
+    --bg-secondary: #151b2d;
+    --bg-card: #1a2235;
+    --text-primary: #e0e6f0;
+    --text-secondary: #8892a6;
+    --accent-cyan: #00f0ff;
+    --accent-magenta: #ff00ff;
+    --accent-green: #00ff88;
+    --accent-red: #ff0055;
+    --accent-yellow: #ffcc00;
+    --border-color: #2a3547;
+    --glow-cyan: rgba(0, 240, 255, 0.4);
+    --glow-magenta: rgba(255, 0, 255, 0.4);
 }
 
-// Fetch IP and Location Info
-async function fetchIPInfo() {
-    try {
-        const response = await fetch('https://ipapi.co/json/');
-        const data = await response.json();
-        
-        document.getElementById('ip-address').textContent = data.ip || 'Bilinmiyor';
-        document.getElementById('isp').textContent = data.org || 'Bilinmiyor';
-        document.getElementById('location').textContent = `${data.city}, ${data.country_name}` || 'Bilinmiyor';
-        document.getElementById('server-location').textContent = `${data.city}, ${data.country_name}`;
-        
-        // Get connection type
-        const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-        if (connection) {
-            document.getElementById('connection-type').textContent = connection.effectiveType.toUpperCase();
-        }
-    } catch (error) {
-        console.error('IP bilgisi alınamadı:', error);
-        document.getElementById('ip-address').textContent = 'Alınamadı';
-        document.getElementById('isp').textContent = 'Alınamadı';
-        document.getElementById('location').textContent = 'Alınamadı';
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+    position: relative;
+}
+
+.background-grid {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image: 
+        linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    z-index: 0;
+    pointer-events: none;
+}
+
+.noise-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.03'/%3E%3C/svg%3E");
+    z-index: 1;
+    pointer-events: none;
+    opacity: 0.5;
+}
+
+.container {
+    position: relative;
+    z-index: 2;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+/* Header */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 2rem 0;
+    border-bottom: 2px solid var(--border-color);
+    margin-bottom: 3rem;
+    animation: slideDown 0.6s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
     }
-}
-
-// Canvas Setup
-let canvas, ctx;
-function initializeCanvas() {
-    canvas = document.getElementById('speedometer');
-    ctx = canvas.getContext('2d');
-    drawSpeedometer(0, 0);
-}
-
-function drawSpeedometer(speed, maxSpeed = 1000) {
-    const centerX = canvas.width / 2;
-    const centerY = canvas.height / 2;
-    const radius = 160;
-    
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Draw outer glow
-    const gradient = ctx.createRadialGradient(centerX, centerY, radius - 20, centerX, centerY, radius + 20);
-    gradient.addColorStop(0, 'rgba(0, 240, 255, 0.1)');
-    gradient.addColorStop(1, 'rgba(0, 240, 255, 0)');
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, radius + 20, 0, Math.PI * 2);
-    ctx.fill();
-    
-    // Draw background arc
-    ctx.strokeStyle = '#2a3547';
-    ctx.lineWidth = 20;
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, radius, 0.75 * Math.PI, 2.25 * Math.PI);
-    ctx.stroke();
-    
-    // Draw speed arc
-    const speedAngle = 0.75 * Math.PI + (speed / maxSpeed) * 1.5 * Math.PI;
-    const speedGradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
-    speedGradient.addColorStop(0, '#00f0ff');
-    speedGradient.addColorStop(0.5, '#ff00ff');
-    speedGradient.addColorStop(1, '#00ff88');
-    
-    ctx.strokeStyle = speedGradient;
-    ctx.lineWidth = 20;
-    ctx.shadowBlur = 20;
-    ctx.shadowColor = '#00f0ff';
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, radius, 0.75 * Math.PI, speedAngle);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    
-    // Draw tick marks
-    ctx.strokeStyle = '#8892a6';
-    ctx.lineWidth = 2;
-    for (let i = 0; i <= 10; i++) {
-        const angle = 0.75 * Math.PI + (i / 10) * 1.5 * Math.PI;
-        const startX = centerX + Math.cos(angle) * (radius - 25);
-        const startY = centerY + Math.sin(angle) * (radius - 25);
-        const endX = centerX + Math.cos(angle) * (radius - 15);
-        const endY = centerY + Math.sin(angle) * (radius - 15);
-        
-        ctx.beginPath();
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(endX, endY);
-        ctx.stroke();
+    to {
+        opacity: 1;
+        transform: translateY(0);
     }
 }
 
-// Start Test
-async function startTest() {
-    if (isTestRunning) {
-        stopTest();
-        return;
+.logo {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 2.5rem;
+    font-weight: 900;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-magenta));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.logo-icon {
+    color: var(--accent-cyan);
+    filter: drop-shadow(0 0 10px var(--glow-cyan));
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+        transform: scale(1);
     }
-    
-    isTestRunning = true;
-    const startBtn = document.getElementById('start-test');
-    startBtn.classList.add('testing');
-    startBtn.querySelector('.btn-text').textContent = 'Testi Durdur';
-    
-    // Reset values
-    latencyData = [];
-    testResults = { download: 0, upload: 0, ping: 0, jitter: 0, packetLoss: 0 };
-    
-    const config = testConfig[testMode];
-    const startTime = Date.now();
-    
-    try {
-        // Phase 1: Ping Test
-        await runPingTest(config.samples);
-        
-        if (!isTestRunning) return;
-        
-        // Phase 2: Download Test
-        await runDownloadTest(config.duration);
-        
-        if (!isTestRunning) return;
-        
-        // Phase 3: Upload Test
-        await runUploadTest(config.duration);
-        
-        // Calculate final stats
-        calculateAdvancedStats();
-        
-        const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-        document.getElementById('test-duration').textContent = `${duration} sn`;
-        
-    } catch (error) {
-        console.error('Test hatası:', error);
-        updateStatus('Test sırasında hata oluştu');
-    } finally {
-        stopTest();
+    50% {
+        opacity: 0.7;
+        transform: scale(1.1);
     }
 }
 
-function stopTest() {
-    isTestRunning = false;
-    const startBtn = document.getElementById('start-test');
-    startBtn.classList.remove('testing');
-    startBtn.querySelector('.btn-text').textContent = 'Testi Başlat';
-    updateStatus('Test tamamlandı');
+.accent {
+    color: var(--accent-magenta);
 }
 
-// Ping Test
-async function runPingTest(samples) {
-    updateStatus('Ping ölçülüyor...');
-    const pings = [];
-    
-    for (let i = 0; i < samples && isTestRunning; i++) {
-        const ping = await measurePing();
-        
-        // Filter out obvious errors
-        if (ping < 500) {
-            pings.push(ping);
-            latencyData.push(ping);
-            
-            const avgPing = pings.reduce((a, b) => a + b, 0) / pings.length;
-            document.getElementById('ping-value').textContent = `${avgPing.toFixed(0)} ms`;
-            
-            // Calculate jitter
-            if (pings.length > 1) {
-                const jitter = calculateJitter(pings);
-                document.getElementById('jitter-value').textContent = `${jitter.toFixed(1)} ms`;
-            }
-            
-            drawLatencyGraph();
-        }
-        
-        await sleep(50); // Faster ping interval
-    }
-    
-    if (pings.length > 0) {
-        testResults.ping = pings.reduce((a, b) => a + b, 0) / pings.length;
-        testResults.jitter = calculateJitter(pings);
-    }
+.header-info {
+    display: flex;
+    gap: 2rem;
 }
 
-async function measurePing() {
-    const pingUrls = [
-        'https://cloudflare.com/cdn-cgi/trace',
-        'https://1.1.1.1/cdn-cgi/trace',
-        'https://www.google.com/generate_204'
-    ];
-    
-    const url = pingUrls[Math.floor(Math.random() * pingUrls.length)];
-    const start = performance.now();
-    
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
-        
-        await fetch(url + '?t=' + Date.now(), { 
-            method: 'GET',
-            cache: 'no-cache',
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        const ping = performance.now() - start;
-        return Math.max(1, ping); // Minimum 1ms
-    } catch (error) {
-        return 999; // Error ping
+.info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.label {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    letter-spacing: 2px;
+    font-weight: 500;
+}
+
+.value {
+    font-size: 0.95rem;
+    color: var(--accent-cyan);
+    font-weight: 500;
+}
+
+/* Main Content */
+.main-content {
+    animation: fadeIn 0.8s ease-out 0.2s both;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
     }
 }
 
-function calculateJitter(pings) {
-    if (pings.length < 2) return 0;
-    let totalDiff = 0;
-    for (let i = 1; i < pings.length; i++) {
-        totalDiff += Math.abs(pings[i] - pings[i - 1]);
-    }
-    return totalDiff / (pings.length - 1);
+.test-display {
+    display: flex;
+    gap: 3rem;
+    margin-bottom: 3rem;
+    align-items: center;
 }
 
-// Download Test
-async function runDownloadTest(duration) {
-    updateStatus('Download hızı ölçülüyor...');
-    
-    // Use multiple test file sources
-    const testFiles = [
-        'https://proof.ovh.net/files/10Mb.dat',
-        'https://proof.ovh.net/files/100Mb.dat',
-        'https://bouygues.testdebit.info/10M.iso',
-        'https://bouygues.testdebit.info/100M.iso'
-    ];
-    
-    let totalBytes = 0;
-    let measurements = [];
-    const startTime = Date.now();
-    const endTime = startTime + (duration * 1000);
-    let currentFileIndex = 0;
-    
-    while (Date.now() < endTime && isTestRunning) {
-        const testUrl = testFiles[currentFileIndex % testFiles.length];
-        const iterStart = Date.now();
-        
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
-            
-            const response = await fetch(testUrl + '?t=' + Date.now(), { 
-                cache: 'no-cache',
-                signal: controller.signal
-            });
-            
-            clearTimeout(timeoutId);
-            
-            const reader = response.body.getReader();
-            let receivedBytes = 0;
-            
-            while (true) {
-                const { done, value } = await reader.read();
-                
-                if (done || Date.now() >= endTime || !isTestRunning) {
-                    break;
-                }
-                
-                receivedBytes += value.length;
-                totalBytes += value.length;
-                
-                // Update UI every 100ms
-                if (receivedBytes % (100000) < value.length) {
-                    const elapsed = (Date.now() - startTime) / 1000;
-                    const speedMbps = ((totalBytes * 8) / elapsed) / 1000000;
-                    measurements.push(speedMbps);
-                    
-                    // Use weighted average of recent measurements
-                    const recentMeasurements = measurements.slice(-10);
-                    const avgSpeed = recentMeasurements.reduce((a, b) => a + b, 0) / recentMeasurements.length;
-                    
-                    testResults.download = avgSpeed;
-                    document.getElementById('download-speed').textContent = `${avgSpeed.toFixed(2)} Mbps`;
-                    document.getElementById('current-speed').textContent = avgSpeed.toFixed(0);
-                    drawSpeedometer(avgSpeed, 500);
-                }
-            }
-            
-        } catch (error) {
-            if (error.name !== 'AbortError') {
-                console.error('Download error:', error);
-            }
-            currentFileIndex++;
-        }
-        
-        // Switch to larger file if speed is high
-        if (measurements.length > 5) {
-            const avgSpeed = measurements.slice(-5).reduce((a, b) => a + b, 0) / 5;
-            if (avgSpeed > 50) {
-                currentFileIndex = 1; // Use larger files
-            }
-        }
-    }
-    
-    // Final calculation
-    if (measurements.length > 0) {
-        const validMeasurements = measurements.filter(m => m > 0 && m < 1000);
-        const finalSpeed = validMeasurements.slice(-20).reduce((a, b) => a + b, 0) / validMeasurements.slice(-20).length;
-        testResults.download = finalSpeed;
-        document.getElementById('download-speed').textContent = `${finalSpeed.toFixed(2)} Mbps`;
-    }
+.test-circle {
+    position: relative;
+    width: 400px;
+    height: 400px;
+    flex-shrink: 0;
 }
 
-// Upload Test
-async function runUploadTest(duration) {
-    updateStatus('Upload hızı ölçülüyor...');
-    
-    // Upload test endpoints that accept POST
-    const uploadUrls = [
-        'https://bouygues.testdebit.info/upload.php',
-        'https://proof.ovh.net/upload.php'
-    ];
-    
-    let totalBytes = 0;
-    let measurements = [];
-    const startTime = Date.now();
-    const endTime = startTime + (duration * 1000);
-    let urlIndex = 0;
-    
-    // Start with smaller chunks, increase based on speed
-    let chunkSize = 500000; // 500KB
-    
-    while (Date.now() < endTime && isTestRunning) {
-        const uploadUrl = uploadUrls[urlIndex % uploadUrls.length];
-        
-        // Generate random data
-        const data = new Uint8Array(chunkSize);
-        crypto.getRandomValues(data);
-        
-        const iterStart = Date.now();
-        
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
-            
-            const formData = new FormData();
-            formData.append('file', new Blob([data]), 'test.dat');
-            
-            await fetch(uploadUrl, {
-                method: 'POST',
-                body: formData,
-                signal: controller.signal,
-                cache: 'no-cache'
-            });
-            
-            clearTimeout(timeoutId);
-            
-            const iterEnd = Date.now();
-            const iterTime = (iterEnd - iterStart) / 1000;
-            
-            if (iterTime > 0.1) { // Only count if took more than 100ms
-                totalBytes += chunkSize;
-                
-                // Calculate speed
-                const elapsedTime = (iterEnd - startTime) / 1000;
-                const speedMbps = ((totalBytes * 8) / elapsedTime) / 1000000;
-                measurements.push(speedMbps);
-                
-                // Use weighted average
-                const recentMeasurements = measurements.slice(-8);
-                const avgSpeed = recentMeasurements.reduce((a, b) => a + b, 0) / recentMeasurements.length;
-                
-                testResults.upload = avgSpeed;
-                document.getElementById('upload-speed').textContent = `${avgSpeed.toFixed(2)} Mbps`;
-                document.getElementById('current-speed').textContent = avgSpeed.toFixed(0);
-                drawSpeedometer(avgSpeed, 200);
-                
-                // Adjust chunk size based on speed
-                if (measurements.length > 3) {
-                    const recentAvg = measurements.slice(-3).reduce((a, b) => a + b, 0) / 3;
-                    if (recentAvg > 20 && chunkSize < 2000000) {
-                        chunkSize = 1000000; // 1MB
-                    } else if (recentAvg > 50 && chunkSize < 5000000) {
-                        chunkSize = 2000000; // 2MB
-                    }
-                }
-            }
-            
-        } catch (error) {
-            if (error.name !== 'AbortError') {
-                console.error('Upload error:', error);
-            }
-            urlIndex++;
-        }
-    }
-    
-    // Final calculation
-    if (measurements.length > 0) {
-        const validMeasurements = measurements.filter(m => m > 0 && m < 500);
-        const finalSpeed = validMeasurements.slice(-15).reduce((a, b) => a + b, 0) / validMeasurements.slice(-15).length;
-        testResults.upload = finalSpeed;
-        document.getElementById('upload-speed').textContent = `${finalSpeed.toFixed(2)} Mbps`;
-    }
+#speedometer {
+    width: 100%;
+    height: 100%;
 }
 
-// Calculate Advanced Stats
-function calculateAdvancedStats() {
-    // Packet Loss (simulated based on failed requests)
-    const packetLoss = Math.random() * 2; // 0-2% simulated
-    testResults.packetLoss = packetLoss;
-    document.getElementById('packet-loss').textContent = `${packetLoss.toFixed(2)}%`;
-    
-    // Gaming Latency (best ping from test)
-    const gamingLatency = Math.min(...latencyData);
-    document.getElementById('gaming-latency').textContent = `${gamingLatency.toFixed(0)} ms`;
-    
-    // Bufferbloat (based on jitter)
-    let bufferbloat = 'İyi';
-    if (testResults.jitter > 50) bufferbloat = 'Kötü';
-    else if (testResults.jitter > 20) bufferbloat = 'Orta';
-    document.getElementById('bufferbloat').textContent = bufferbloat;
-    
-    // Gaming Performance Ratings
-    updateGamingRatings();
-    
-    // Spike Analysis
-    analyzeSpikes();
+.test-value {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
-function updateGamingRatings() {
-    const ping = testResults.ping;
-    const jitter = testResults.jitter;
-    
-    // FPS Games (most sensitive to ping and jitter)
-    let fpsRating = 'Mükemmel';
-    let fpsClass = 'excellent';
-    if (ping > 50 || jitter > 20) {
-        fpsRating = 'İyi';
-        fpsClass = 'good';
-    }
-    if (ping > 80 || jitter > 40) {
-        fpsRating = 'Orta';
-        fpsClass = 'fair';
-    }
-    if (ping > 120) {
-        fpsRating = 'Zayıf';
-        fpsClass = 'poor';
-    }
-    
-    const fpsEl = document.getElementById('fps-rating');
-    fpsEl.parentElement.className = `game-stat ${fpsClass}`;
-    fpsEl.querySelector('.rating-text').textContent = fpsRating;
-    
-    // MOBA Games
-    let mobaRating = 'Mükemmel';
-    let mobaClass = 'excellent';
-    if (ping > 70 || jitter > 30) {
-        mobaRating = 'İyi';
-        mobaClass = 'good';
-    }
-    if (ping > 100 || jitter > 50) {
-        mobaRating = 'Orta';
-        mobaClass = 'fair';
-    }
-    if (ping > 150) {
-        mobaRating = 'Zayıf';
-        mobaClass = 'poor';
-    }
-    
-    const mobaEl = document.getElementById('moba-rating');
-    mobaEl.parentElement.className = `game-stat ${mobaClass}`;
-    mobaEl.querySelector('.rating-text').textContent = mobaRating;
-    
-    // Battle Royale
-    let brRating = 'Mükemmel';
-    let brClass = 'excellent';
-    if (ping > 60 || jitter > 25) {
-        brRating = 'İyi';
-        brClass = 'good';
-    }
-    if (ping > 90 || jitter > 45) {
-        brRating = 'Orta';
-        brClass = 'fair';
-    }
-    if (ping > 130) {
-        brRating = 'Zayıf';
-        brClass = 'poor';
-    }
-    
-    const brEl = document.getElementById('br-rating');
-    brEl.parentElement.className = `game-stat ${brClass}`;
-    brEl.querySelector('.rating-text').textContent = brRating;
+.speed-number {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 5rem;
+    font-weight: 900;
+    line-height: 1;
+    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-magenta));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 0 20px var(--glow-cyan));
 }
 
-function analyzeSpikes() {
-    if (latencyData.length < 5) return;
-    
-    const avgPing = latencyData.reduce((a, b) => a + b, 0) / latencyData.length;
-    const threshold = avgPing * 2; // Spike = 2x average
-    
-    let spikeCount = 0;
-    latencyData.forEach(ping => {
-        if (ping > threshold) spikeCount++;
-    });
-    
-    document.getElementById('spike-count').textContent = spikeCount;
-    document.getElementById('max-ping').textContent = `${Math.max(...latencyData).toFixed(0)} ms`;
-    document.getElementById('min-ping').textContent = `${Math.min(...latencyData).toFixed(0)} ms`;
+.speed-unit {
+    font-size: 1.2rem;
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
 }
 
-// Draw Latency Graph
-function drawLatencyGraph() {
-    const canvas = document.getElementById('latency-canvas');
-    const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
-    
-    // Clear canvas
-    ctx.clearRect(0, 0, width, height);
-    
-    if (latencyData.length < 2) return;
-    
-    // Calculate scale
-    const maxPing = Math.max(...latencyData);
-    const minPing = Math.min(...latencyData);
-    const range = maxPing - minPing || 1;
-    const padding = 40;
-    
-    // Draw grid
-    ctx.strokeStyle = '#2a3547';
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-        const y = padding + (height - 2 * padding) * (i / 4);
-        ctx.beginPath();
-        ctx.moveTo(padding, y);
-        ctx.lineTo(width - padding, y);
-        ctx.stroke();
-    }
-    
-    // Draw axis labels
-    ctx.fillStyle = '#8892a6';
-    ctx.font = '10px JetBrains Mono';
-    ctx.textAlign = 'right';
-    for (let i = 0; i <= 4; i++) {
-        const y = padding + (height - 2 * padding) * (i / 4);
-        const value = maxPing - (range * (i / 4));
-        ctx.fillText(`${value.toFixed(0)}ms`, padding - 10, y + 4);
-    }
-    
-    // Draw line
-    ctx.strokeStyle = '#00f0ff';
-    ctx.lineWidth = 2;
-    ctx.shadowBlur = 5;
-    ctx.shadowColor = '#00f0ff';
-    ctx.beginPath();
-    
-    const stepX = (width - 2 * padding) / (latencyData.length - 1);
-    latencyData.forEach((ping, i) => {
-        const x = padding + i * stepX;
-        const y = padding + (height - 2 * padding) * (1 - (ping - minPing) / range);
-        
-        if (i === 0) {
-            ctx.moveTo(x, y);
-        } else {
-            ctx.lineTo(x, y);
-        }
-    });
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-    
-    // Highlight spikes
-    const avgPing = latencyData.reduce((a, b) => a + b, 0) / latencyData.length;
-    const threshold = avgPing * 1.8;
-    
-    ctx.fillStyle = '#ff0055';
-    latencyData.forEach((ping, i) => {
-        if (ping > threshold) {
-            const x = padding + i * stepX;
-            const y = padding + (height - 2 * padding) * (1 - (ping - minPing) / range);
-            ctx.beginPath();
-            ctx.arc(x, y, 4, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    });
+.test-status {
+    position: absolute;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 2px;
 }
 
-// Toggle Stats
-function toggleStats() {
-    const content = document.getElementById('stats-content');
-    const btn = document.getElementById('toggle-stats');
-    
-    if (content.classList.contains('active')) {
-        content.classList.remove('active');
-        btn.textContent = '▼';
-    } else {
-        content.classList.add('active');
-        btn.textContent = '▲';
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.5rem;
+    flex-grow: 1;
+}
+
+.metric-card {
+    background: var(--bg-card);
+    border: 2px solid var(--border-color);
+    border-radius: 12px;
+    padding: 2rem;
+    display: flex;
+    gap: 1.5rem;
+    align-items: center;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.metric-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, transparent, rgba(0, 240, 255, 0.05));
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.metric-card:hover {
+    border-color: var(--accent-cyan);
+    box-shadow: 0 0 20px var(--glow-cyan);
+    transform: translateY(-4px);
+}
+
+.metric-card:hover::before {
+    opacity: 1;
+}
+
+.metric-icon {
+    font-size: 3rem;
+    color: var(--accent-cyan);
+    filter: drop-shadow(0 0 10px var(--glow-cyan));
+}
+
+.metric-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.metric-label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+.metric-value {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+/* Test Modes */
+.test-modes {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 2rem;
+    justify-content: center;
+}
+
+.mode-btn {
+    background: var(--bg-card);
+    border: 2px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-primary);
+    min-width: 180px;
+}
+
+.mode-btn:hover {
+    border-color: var(--accent-cyan);
+    transform: translateY(-4px);
+    box-shadow: 0 0 20px var(--glow-cyan);
+}
+
+.mode-btn.active {
+    border-color: var(--accent-magenta);
+    background: linear-gradient(135deg, rgba(255, 0, 255, 0.1), transparent);
+    box-shadow: 0 0 30px var(--glow-magenta);
+}
+
+.mode-icon {
+    font-size: 2rem;
+    color: var(--accent-cyan);
+}
+
+.mode-btn.active .mode-icon {
+    color: var(--accent-magenta);
+}
+
+.mode-name {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 1px;
+}
+
+.mode-time {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* Start Button */
+.start-button {
+    position: relative;
+    width: 100%;
+    max-width: 400px;
+    margin: 0 auto 3rem;
+    padding: 2rem;
+    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-magenta));
+    border: none;
+    border-radius: 16px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    cursor: pointer;
+    overflow: hidden;
+    transition: all 0.3s ease;
+    display: block;
+}
+
+.start-button:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 10px 40px var(--glow-magenta);
+}
+
+.start-button:active {
+    transform: translateY(-2px);
+}
+
+.start-button.testing {
+    background: var(--bg-card);
+    border: 2px solid var(--accent-red);
+    color: var(--accent-red);
+}
+
+.btn-glow {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle, rgba(255,255,255,0.3), transparent);
+    transform: translate(-50%, -50%) scale(0);
+    border-radius: 50%;
+    transition: transform 0.6s ease;
+}
+
+.start-button:hover .btn-glow {
+    transform: translate(-50%, -50%) scale(2);
+}
+
+/* Advanced Stats */
+.advanced-stats {
+    background: var(--bg-secondary);
+    border: 2px solid var(--border-color);
+    border-radius: 16px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+}
+
+.stats-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+}
+
+.stats-header h2 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.8rem;
+    color: var(--accent-cyan);
+}
+
+.toggle-stats {
+    background: none;
+    border: 2px solid var(--border-color);
+    color: var(--accent-cyan);
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-size: 1.2rem;
+}
+
+.toggle-stats:hover {
+    border-color: var(--accent-cyan);
+    box-shadow: 0 0 10px var(--glow-cyan);
+}
+
+.stats-content {
+    display: none;
+}
+
+.stats-content.active {
+    display: block;
+    animation: expandDown 0.4s ease-out;
+}
+
+@keyframes expandDown {
+    from {
+        opacity: 0;
+        max-height: 0;
+    }
+    to {
+        opacity: 1;
+        max-height: 2000px;
     }
 }
 
-// Update Status
-function updateStatus(message) {
-    document.getElementById('test-status').textContent = message;
+.stats-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
 }
 
-// Utility Functions
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+.stat-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
 }
 
-// Auto-expand stats after first test
-let firstTestCompleted = false;
-const originalStopTest = stopTest;
-stopTest = function() {
-    originalStopTest();
-    if (!firstTestCompleted && testResults.download > 0) {
-        firstTestCompleted = true;
-        setTimeout(() => {
-            const content = document.getElementById('stats-content');
-            const btn = document.getElementById('toggle-stats');
-            if (!content.classList.contains('active')) {
-                content.classList.add('active');
-                btn.textContent = '▲';
-            }
-        }, 500);
+.stat-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    color: var(--accent-cyan);
+    font-weight: 600;
+}
+
+/* Gaming Section */
+.gaming-section {
+    margin: 2rem 0;
+}
+
+.gaming-section h3 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--accent-magenta);
+    margin-bottom: 1.5rem;
+    font-size: 1.4rem;
+}
+
+.gaming-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+}
+
+.game-stat {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1.5rem;
+}
+
+.game-name {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.game-rating {
+    position: relative;
+}
+
+.rating-bar {
+    height: 8px;
+    background: var(--border-color);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+.rating-bar::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent-green), var(--accent-cyan));
+    border-radius: 4px;
+    transition: width 0.6s ease;
+}
+
+.game-stat.excellent .rating-bar::after {
+    width: 90%;
+    background: linear-gradient(90deg, var(--accent-green), var(--accent-cyan));
+}
+
+.game-stat.good .rating-bar::after {
+    width: 70%;
+    background: linear-gradient(90deg, var(--accent-yellow), var(--accent-green));
+}
+
+.game-stat.fair .rating-bar::after {
+    width: 50%;
+    background: linear-gradient(90deg, var(--accent-red), var(--accent-yellow));
+}
+
+.game-stat.poor .rating-bar::after {
+    width: 30%;
+    background: var(--accent-red);
+}
+
+.rating-text {
+    font-size: 0.85rem;
+    color: var(--accent-cyan);
+    font-weight: 600;
+}
+
+/* Latency Section */
+.latency-section {
+    margin: 2rem 0;
+}
+
+.latency-section h3 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--accent-magenta);
+    margin-bottom: 1.5rem;
+    font-size: 1.4rem;
+}
+
+.latency-graph {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+#latency-canvas {
+    width: 100%;
+    height: 200px;
+}
+
+.spike-info {
+    display: flex;
+    gap: 2rem;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.spike-info strong {
+    color: var(--accent-cyan);
+}
+
+/* Footer */
+.footer {
+    text-align: center;
+    padding: 2rem 0;
+    color: var(--text-secondary);
+    border-top: 2px solid var(--border-color);
+    margin-top: 3rem;
+    font-size: 0.85rem;
+}
+
+/* Responsive */
+@media (max-width: 1200px) {
+    .test-display {
+        flex-direction: column;
     }
-};
+    
+    .test-circle {
+        width: 300px;
+        height: 300px;
+    }
+    
+    .speed-number {
+        font-size: 4rem;
+    }
+}
+
+@media (max-width: 768px) {
+    .header {
+        flex-direction: column;
+        gap: 1.5rem;
+        text-align: center;
+    }
+    
+    .header-info {
+        flex-direction: column;
+        gap: 1rem;
+    }
+    
+    .metrics-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .test-modes {
+        flex-direction: column;
+    }
+    
+    .stats-row {
+        grid-template-columns: 1fr;
+    }
+    
+    .gaming-grid {
+        grid-template-columns: 1fr;
+    }
+}

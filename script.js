@@ -89,21 +89,55 @@ async function fetchIPInfo() {
         document.getElementById('location').textContent = location;
         document.getElementById('server-location').textContent = location;
         
-        // Get connection type
+        // Get connection type - improved detection
         const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-        let connectionType = 'Ethernet/WiFi';
+        let connectionType = 'Bilinmiyor';
         
         if (connection) {
-            const type = connection.effectiveType || connection.type;
-            if (type === '4g') connectionType = '4G Mobile';
-            else if (type === '3g') connectionType = '3G Mobile';
-            else if (type === 'slow-2g' || type === '2g') connectionType = '2G Mobile';
-            else if (type === 'wifi') connectionType = 'WiFi';
-            else if (type === 'ethernet') connectionType = 'Ethernet';
-            else connectionType = type ? type.toUpperCase() : 'Broadband';
+            // Check effective type first
+            const effType = connection.effectiveType;
+            const type = connection.type;
+            
+            console.log('Connection info:', { effectiveType: effType, type: type, downlink: connection.downlink });
+            
+            // Determine connection type
+            if (type === 'wifi' || type === 'ethernet') {
+                connectionType = type === 'wifi' ? 'WiFi' : 'Ethernet';
+            } else if (effType) {
+                // Use effective type for mobile
+                if (effType === 'slow-2g') connectionType = '2G (Çok Yavaş)';
+                else if (effType === '2g') connectionType = '2G';
+                else if (effType === '3g') connectionType = '3G';
+                else if (effType === '4g') connectionType = '4G/LTE';
+                else connectionType = 'Genişbant';
+            } else if (type) {
+                // Fallback to type
+                if (type === 'cellular') connectionType = 'Mobil Veri';
+                else if (type === 'bluetooth') connectionType = 'Bluetooth';
+                else connectionType = type.toUpperCase();
+            }
+            
+            // Additional check based on downlink speed
+            if (connection.downlink) {
+                const downlink = connection.downlink;
+                if (downlink > 50 && connectionType === 'Genişbant') {
+                    connectionType = 'Fiber/Yüksek Hızlı';
+                } else if (downlink > 10 && connectionType === 'Genişbant') {
+                    connectionType = 'ADSL/Cable';
+                }
+            }
+        } else {
+            // No connection API, try to guess from user agent
+            const ua = navigator.userAgent.toLowerCase();
+            if (ua.includes('mobile') || ua.includes('android') || ua.includes('iphone')) {
+                connectionType = 'Mobil (Bilinmiyor)';
+            } else {
+                connectionType = 'Kablolu/WiFi';
+            }
         }
         
         document.getElementById('connection-type').textContent = connectionType;
+        console.log('Connection type detected:', connectionType);
         
     } catch (error) {
         console.error('IP bilgisi alınamadı:', error);
@@ -269,11 +303,27 @@ function stopTest() {
 async function runPingTest(samples) {
     updateStatus('Ping ölçülüyor...');
     const pings = [];
+    let consecutiveErrors = 0;
+    let totalErrors = 0;
     
     for (let i = 0; i < samples && isTestRunning; i++) {
         const ping = await measurePing();
         
-        // Filter out obvious errors
+        // Check for connection issues
+        if (ping >= 500) {
+            consecutiveErrors++;
+            totalErrors++;
+            
+            // If too many consecutive errors, warn user
+            if (consecutiveErrors >= 3) {
+                updateStatus('⚠️ Bağlantı problemi tespit edildi!');
+                console.warn('Connection issue detected: multiple high ping measurements');
+            }
+        } else {
+            consecutiveErrors = 0; // Reset on successful ping
+        }
+        
+        // Filter out obvious errors but keep high pings
         if (ping < 500) {
             pings.push(ping);
             latencyData.push(ping);
@@ -285,6 +335,11 @@ async function runPingTest(samples) {
             if (pings.length > 1) {
                 const jitter = calculateJitter(pings);
                 document.getElementById('jitter-value').textContent = `${jitter.toFixed(1)} ms`;
+                
+                // Warn if jitter is very high
+                if (jitter > 100) {
+                    updateStatus('⚠️ Yüksek jitter - bağlantı kararsız!');
+                }
             }
             
             drawLatencyGraph();
@@ -296,6 +351,18 @@ async function runPingTest(samples) {
     if (pings.length > 0) {
         testResults.ping = pings.reduce((a, b) => a + b, 0) / pings.length;
         testResults.jitter = calculateJitter(pings);
+        testResults.packetLoss = (totalErrors / samples) * 100;
+        
+        // Log connection quality
+        console.log(`Ping test completed: avg=${testResults.ping.toFixed(0)}ms, jitter=${testResults.jitter.toFixed(1)}ms, loss=${testResults.packetLoss.toFixed(1)}%`);
+        
+        // Warn if packet loss is high
+        if (testResults.packetLoss > 5) {
+            console.warn(`High packet loss detected: ${testResults.packetLoss.toFixed(1)}%`);
+        }
+    } else {
+        updateStatus('❌ Bağlantı kurulamadı!');
+        console.error('No successful ping measurements');
     }
 }
 
@@ -438,7 +505,7 @@ function runDownloadTest(duration) {
     });
 }
 
-// Upload Test with XMLHttpRequest
+// Upload Test with XMLHttpRequest and multiple endpoints
 function runUploadTest(duration) {
     return new Promise((resolve) => {
         updateStatus('Upload hızı ölçülüyor...');
@@ -446,14 +513,23 @@ function runUploadTest(duration) {
         let measurements = [];
         const startTime = Date.now();
         let iteration = 0;
+        let currentEndpoint = 0;
         
-        // Larger test sizes for upload
-        const testSizes = [2, 5, 10, 20]; // MB
+        // Multiple upload endpoints to try
+        const uploadEndpoints = [
+            'https://speed.cloudflare.com/__up',
+            'https://www.google.com/upload',
+            'https://httpbin.org/post',
+            'https://api.github.com/markdown'
+        ];
+        
+        // Test sizes
+        const testSizes = [1, 2, 5, 10]; // MB
         let currentSizeIndex = 0;
         
         function uploadIteration() {
             if (Date.now() - startTime > duration * 1000 || !isTestRunning) {
-                // Calculate final result - use peak measurements
+                // Calculate final result
                 if (measurements.length > 0) {
                     const sortedMeasurements = measurements.sort((a, b) => b - a);
                     const topMeasurements = sortedMeasurements.slice(0, Math.min(8, sortedMeasurements.length));
@@ -461,13 +537,18 @@ function runUploadTest(duration) {
                     testResults.upload = avgSpeed;
                     document.getElementById('upload-speed').textContent = `${avgSpeed.toFixed(2)} Mbps`;
                     console.log(`Final Upload: ${avgSpeed.toFixed(2)} Mbps`);
+                } else {
+                    // If no measurements, show error
+                    console.warn('No upload measurements recorded');
+                    document.getElementById('upload-speed').textContent = 'Test edilemedi';
+                    testResults.upload = 0;
                 }
                 resolve();
                 return;
             }
             
             const size = testSizes[Math.min(currentSizeIndex, testSizes.length - 1)];
-            const url = 'https://speed.cloudflare.com/__up';
+            const url = uploadEndpoints[currentEndpoint % uploadEndpoints.length];
             
             // Generate random data
             const data = new Uint8Array(size * 1000000);
@@ -477,9 +558,13 @@ function runUploadTest(duration) {
             const ulStart = Date.now();
             let lastLoaded = 0;
             let lastTime = ulStart;
-            let chunkMeasurements = [];
+            let hasProgress = false;
             
             xhr.open('POST', url, true);
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            
+            // Set timeout
+            xhr.timeout = 10000; // 10 second timeout
             
             xhr.upload.onprogress = (e) => {
                 if (!isTestRunning) {
@@ -488,6 +573,7 @@ function runUploadTest(duration) {
                     return;
                 }
                 
+                hasProgress = true;
                 const now = Date.now();
                 const timeDiff = (now - lastTime) / 1000;
                 
@@ -496,7 +582,6 @@ function runUploadTest(duration) {
                     const speedMbps = (bytesDiff * 8) / (timeDiff * 1000000);
                     
                     if (speedMbps > 0.5 && speedMbps < 1000) {
-                        chunkMeasurements.push(speedMbps);
                         measurements.push(speedMbps);
                         
                         // Get peak speed from recent measurements
@@ -509,7 +594,7 @@ function runUploadTest(duration) {
                         drawSpeedometer(peakSpeed, 200);
                         updateVisualizer('upload', peakSpeed);
                         
-                        console.log(`Upload: ${peakSpeed.toFixed(2)} Mbps`);
+                        console.log(`Upload: ${peakSpeed.toFixed(2)} Mbps (endpoint ${currentEndpoint})`);
                     }
                     
                     lastLoaded = e.loaded;
@@ -519,7 +604,7 @@ function runUploadTest(duration) {
             
             xhr.onload = () => {
                 iteration++;
-                console.log(`Upload iteration ${iteration} completed`);
+                console.log(`Upload iteration ${iteration} completed (endpoint ${currentEndpoint})`);
                 
                 // Increase file size if getting good speeds
                 if (measurements.length > 5) {
@@ -528,15 +613,34 @@ function runUploadTest(duration) {
                         currentSizeIndex++;
                     }
                 }
+                
                 setTimeout(uploadIteration, 50);
             };
             
             xhr.onerror = () => {
-                console.error('Upload XHR error');
-                setTimeout(uploadIteration, 200);
+                console.error(`Upload XHR error on endpoint ${currentEndpoint}: ${url}`);
+                // Try next endpoint
+                currentEndpoint++;
+                setTimeout(uploadIteration, 100);
+            };
+            
+            xhr.ontimeout = () => {
+                console.error(`Upload timeout on endpoint ${currentEndpoint}`);
+                currentEndpoint++;
+                setTimeout(uploadIteration, 100);
             };
             
             xhr.send(data);
+            
+            // Fallback: if no progress after 2 seconds, try next endpoint
+            setTimeout(() => {
+                if (!hasProgress) {
+                    console.warn(`No progress on endpoint ${currentEndpoint}, switching...`);
+                    xhr.abort();
+                    currentEndpoint++;
+                    uploadIteration();
+                }
+            }, 2000);
         }
         
         uploadIteration();
@@ -545,19 +649,21 @@ function runUploadTest(duration) {
 
 // Calculate Advanced Stats
 function calculateAdvancedStats() {
-    // Packet Loss (simulated based on failed requests)
-    const packetLoss = Math.random() * 2; // 0-2% simulated
-    testResults.packetLoss = packetLoss;
+    // Packet Loss (from ping test)
+    const packetLoss = testResults.packetLoss || 0;
     document.getElementById('packet-loss').textContent = `${packetLoss.toFixed(2)}%`;
     
     // Gaming Latency (best ping from test)
-    const gamingLatency = Math.min(...latencyData);
+    const gamingLatency = latencyData.length > 0 ? Math.min(...latencyData) : 0;
     document.getElementById('gaming-latency').textContent = `${gamingLatency.toFixed(0)} ms`;
     
-    // Bufferbloat (based on jitter)
+    // Bufferbloat (based on jitter and packet loss)
     let bufferbloat = 'İyi';
-    if (testResults.jitter > 50) bufferbloat = 'Kötü';
-    else if (testResults.jitter > 20) bufferbloat = 'Orta';
+    if (testResults.jitter > 50 || packetLoss > 3) {
+        bufferbloat = 'Kötü';
+    } else if (testResults.jitter > 20 || packetLoss > 1) {
+        bufferbloat = 'Orta';
+    }
     document.getElementById('bufferbloat').textContent = bufferbloat;
     
     // Gaming Performance Ratings
@@ -565,87 +671,182 @@ function calculateAdvancedStats() {
     
     // Spike Analysis
     analyzeSpikes();
+    
+    // Log summary
+    console.log('Advanced stats calculated:', {
+        packetLoss: `${packetLoss.toFixed(2)}%`,
+        gamingLatency: `${gamingLatency.toFixed(0)}ms`,
+        bufferbloat,
+        download: `${testResults.download.toFixed(2)} Mbps`,
+        upload: `${testResults.upload.toFixed(2)} Mbps`,
+        ping: `${testResults.ping.toFixed(0)} ms`,
+        jitter: `${testResults.jitter.toFixed(1)} ms`
+    });
 }
 
 function updateGamingRatings() {
     const ping = testResults.ping;
     const jitter = testResults.jitter;
+    const download = testResults.download;
+    const upload = testResults.upload;
     
-    // FPS Games (most sensitive to ping and jitter)
-    let fpsRating = 'Mükemmel';
-    let fpsClass = 'excellent';
-    if (ping > 50 || jitter > 20) {
-        fpsRating = 'İyi';
-        fpsClass = 'good';
-    }
-    if (ping > 80 || jitter > 40) {
-        fpsRating = 'Orta';
-        fpsClass = 'fair';
-    }
-    if (ping > 120) {
-        fpsRating = 'Zayıf';
-        fpsClass = 'poor';
-    }
-    
-    const fpsEl = document.getElementById('fps-rating');
-    fpsEl.parentElement.className = `game-stat ${fpsClass}`;
-    fpsEl.querySelector('.rating-text').textContent = fpsRating;
-    
-    // MOBA Games
-    let mobaRating = 'Mükemmel';
-    let mobaClass = 'excellent';
-    if (ping > 70 || jitter > 30) {
-        mobaRating = 'İyi';
-        mobaClass = 'good';
-    }
-    if (ping > 100 || jitter > 50) {
-        mobaRating = 'Orta';
-        mobaClass = 'fair';
-    }
-    if (ping > 150) {
-        mobaRating = 'Zayıf';
-        mobaClass = 'poor';
+    // Web Tarama (only needs low download)
+    let webRating = 'Mükemmel';
+    let webClass = 'excellent';
+    if (download < 1) {
+        webRating = 'Zayıf';
+        webClass = 'poor';
+    } else if (download < 5) {
+        webRating = 'Orta';
+        webClass = 'fair';
+    } else if (download < 10) {
+        webRating = 'İyi';
+        webClass = 'good';
     }
     
-    const mobaEl = document.getElementById('moba-rating');
-    mobaEl.parentElement.className = `game-stat ${mobaClass}`;
-    mobaEl.querySelector('.rating-text').textContent = mobaRating;
-    
-    // Battle Royale
-    let brRating = 'Mükemmel';
-    let brClass = 'excellent';
-    if (ping > 60 || jitter > 25) {
-        brRating = 'İyi';
-        brClass = 'good';
-    }
-    if (ping > 90 || jitter > 45) {
-        brRating = 'Orta';
-        brClass = 'fair';
-    }
-    if (ping > 130) {
-        brRating = 'Zayıf';
-        brClass = 'poor';
+    const webEl = document.getElementById('web-rating');
+    if (webEl) {
+        webEl.parentElement.className = `game-stat ${webClass}`;
+        webEl.querySelector('.rating-text').textContent = webRating;
     }
     
-    const brEl = document.getElementById('br-rating');
-    brEl.parentElement.className = `game-stat ${brClass}`;
-    brEl.querySelector('.rating-text').textContent = brRating;
+    // Video İzleme HD (needs ~5-10 Mbps)
+    let videoRating = 'Mükemmel';
+    let videoClass = 'excellent';
+    if (download < 3) {
+        videoRating = 'Zayıf';
+        videoClass = 'poor';
+    } else if (download < 8) {
+        videoRating = 'Orta';
+        videoClass = 'fair';
+    } else if (download < 15) {
+        videoRating = 'İyi';
+        videoClass = 'good';
+    }
+    
+    const videoEl = document.getElementById('video-rating');
+    if (videoEl) {
+        videoEl.parentElement.className = `game-stat ${videoClass}`;
+        videoEl.querySelector('.rating-text').textContent = videoRating;
+    }
+    
+    // Online Oyun (ping and jitter critical)
+    let gamingRating = 'Mükemmel';
+    let gamingClass = 'excellent';
+    if (ping > 100 || jitter > 40) {
+        gamingRating = 'Zayıf';
+        gamingClass = 'poor';
+    } else if (ping > 60 || jitter > 20) {
+        gamingRating = 'Orta';
+        gamingClass = 'fair';
+    } else if (ping > 40 || jitter > 10) {
+        gamingRating = 'İyi';
+        gamingClass = 'good';
+    }
+    
+    const gamingEl = document.getElementById('gaming-rating');
+    if (gamingEl) {
+        gamingEl.parentElement.className = `game-stat ${gamingClass}`;
+        gamingEl.querySelector('.rating-text').textContent = gamingRating;
+    }
+    
+    // 4K Streaming (needs 25+ Mbps)
+    let streamingRating = 'Mükemmel';
+    let streamingClass = 'excellent';
+    if (download < 15) {
+        streamingRating = 'Zayıf';
+        streamingClass = 'poor';
+    } else if (download < 25) {
+        streamingRating = 'Orta';
+        streamingClass = 'fair';
+    } else if (download < 40) {
+        streamingRating = 'İyi';
+        streamingClass = 'good';
+    }
+    
+    const streamingEl = document.getElementById('streaming-rating');
+    if (streamingEl) {
+        streamingEl.parentElement.className = `game-stat ${streamingClass}`;
+        streamingEl.querySelector('.rating-text').textContent = streamingRating;
+    }
+    
+    // Video Call (needs low ping, some upload)
+    let callRating = 'Mükemmel';
+    let callClass = 'excellent';
+    if (ping > 150 || upload < 1 || download < 2) {
+        callRating = 'Zayıf';
+        callClass = 'poor';
+    } else if (ping > 100 || upload < 2 || download < 5) {
+        callRating = 'Orta';
+        callClass = 'fair';
+    } else if (ping > 80 || upload < 3 || download < 8) {
+        callRating = 'İyi';
+        callClass = 'good';
+    }
+    
+    const callEl = document.getElementById('call-rating');
+    if (callEl) {
+        callEl.parentElement.className = `game-stat ${callClass}`;
+        callEl.querySelector('.rating-text').textContent = callRating;
+    }
+    
+    // Dosya İndirme (just download speed)
+    let downloadRating = 'Mükemmel';
+    let downloadClass = 'excellent';
+    if (download < 5) {
+        downloadRating = 'Çok Yavaş';
+        downloadClass = 'poor';
+    } else if (download < 20) {
+        downloadRating = 'Yavaş';
+        downloadClass = 'fair';
+    } else if (download < 50) {
+        downloadRating = 'Normal';
+        downloadClass = 'good';
+    }
+    
+    const downloadEl = document.getElementById('download-rating');
+    if (downloadEl) {
+        downloadEl.parentElement.className = `game-stat ${downloadClass}`;
+        downloadEl.querySelector('.rating-text').textContent = downloadRating;
+    }
 }
 
 function analyzeSpikes() {
     if (latencyData.length < 5) return;
     
     const avgPing = latencyData.reduce((a, b) => a + b, 0) / latencyData.length;
-    const threshold = avgPing * 2; // Spike = 2x average
+    const minPing = Math.min(...latencyData);
+    const maxPing = Math.max(...latencyData);
+    
+    // Calculate standard deviation
+    const variance = latencyData.reduce((sum, ping) => sum + Math.pow(ping - avgPing, 2), 0) / latencyData.length;
+    const stdDev = Math.sqrt(variance);
+    
+    // Spike threshold: average + 2 standard deviations OR 1.5x average (whichever is stricter)
+    const spikeThreshold = Math.max(avgPing + (2 * stdDev), avgPing * 1.5);
     
     let spikeCount = 0;
-    latencyData.forEach(ping => {
-        if (ping > threshold) spikeCount++;
+    let spikeIndices = [];
+    latencyData.forEach((ping, index) => {
+        if (ping > spikeThreshold) {
+            spikeCount++;
+            spikeIndices.push(index);
+        }
     });
     
     document.getElementById('spike-count').textContent = spikeCount;
-    document.getElementById('max-ping').textContent = `${Math.max(...latencyData).toFixed(0)} ms`;
-    document.getElementById('min-ping').textContent = `${Math.min(...latencyData).toFixed(0)} ms`;
+    document.getElementById('max-ping').textContent = `${maxPing.toFixed(0)} ms`;
+    document.getElementById('min-ping').textContent = `${minPing.toFixed(0)} ms`;
+    
+    // Log spike analysis
+    console.log(`Spike analysis: ${spikeCount} spikes detected (threshold: ${spikeThreshold.toFixed(0)}ms)`);
+    
+    // Warn if many spikes
+    if (spikeCount > latencyData.length * 0.15) {
+        console.warn(`High spike rate detected: ${((spikeCount / latencyData.length) * 100).toFixed(1)}%`);
+    }
+    
+    return { spikeCount, spikeIndices, avgPing, minPing, maxPing, spikeThreshold };
 }
 
 // Draw Latency Graph
@@ -663,8 +864,14 @@ function drawLatencyGraph() {
     // Calculate scale
     const maxPing = Math.max(...latencyData);
     const minPing = Math.min(...latencyData);
+    const avgPing = latencyData.reduce((a, b) => a + b, 0) / latencyData.length;
     const range = maxPing - minPing || 1;
     const padding = 40;
+    
+    // Calculate spike threshold
+    const variance = latencyData.reduce((sum, ping) => sum + Math.pow(ping - avgPing, 2), 0) / latencyData.length;
+    const stdDev = Math.sqrt(variance);
+    const spikeThreshold = Math.max(avgPing + (2 * stdDev), avgPing * 1.5);
     
     // Draw grid
     ctx.strokeStyle = '#2a3547';
@@ -685,6 +892,39 @@ function drawLatencyGraph() {
         const y = padding + (height - 2 * padding) * (i / 4);
         const value = maxPing - (range * (i / 4));
         ctx.fillText(`${value.toFixed(0)}ms`, padding - 10, y + 4);
+    }
+    
+    // Draw average line
+    const avgY = padding + (height - 2 * padding) * (1 - (avgPing - minPing) / range);
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(padding, avgY);
+    ctx.lineTo(width - padding, avgY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    // Label for average
+    ctx.fillStyle = '#ffcc00';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Avg: ${avgPing.toFixed(0)}ms`, width - padding + 10, avgY + 4);
+    
+    // Draw spike threshold line
+    if (spikeThreshold <= maxPing) {
+        const thresholdY = padding + (height - 2 * padding) * (1 - (spikeThreshold - minPing) / range);
+        ctx.strokeStyle = '#ff0055';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(padding, thresholdY);
+        ctx.lineTo(width - padding, thresholdY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        
+        // Label for threshold
+        ctx.fillStyle = '#ff0055';
+        ctx.fillText(`Spike: ${spikeThreshold.toFixed(0)}ms`, width - padding + 10, thresholdY + 4);
     }
     
     // Draw line
@@ -709,16 +949,13 @@ function drawLatencyGraph() {
     ctx.shadowBlur = 0;
     
     // Highlight spikes
-    const avgPing = latencyData.reduce((a, b) => a + b, 0) / latencyData.length;
-    const threshold = avgPing * 1.8;
-    
     ctx.fillStyle = '#ff0055';
     latencyData.forEach((ping, i) => {
-        if (ping > threshold) {
+        if (ping > spikeThreshold) {
             const x = padding + i * stepX;
             const y = padding + (height - 2 * padding) * (1 - (ping - minPing) / range);
             ctx.beginPath();
-            ctx.arc(x, y, 4, 0, Math.PI * 2);
+            ctx.arc(x, y, 5, 0, Math.PI * 2);
             ctx.fill();
         }
     });

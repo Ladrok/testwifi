@@ -604,6 +604,61 @@ body {
     color: var(--accent-cyan);
 }
 
+/* Speed Visualizer */
+.visualizer-section {
+    margin: 2rem 0;
+}
+
+.visualizer-section h3 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--accent-cyan);
+    margin-bottom: 1.5rem;
+    font-size: 1.4rem;
+}
+
+.speed-visualizer {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+#speed-canvas {
+    width: 100%;
+    height: 250px;
+}
+
+.visualizer-legend {
+    display: flex;
+    gap: 2rem;
+    justify-content: center;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.legend-color {
+    width: 20px;
+    height: 4px;
+    border-radius: 2px;
+}
+
+.legend-color.download {
+    background: var(--accent-cyan);
+    box-shadow: 0 0 10px var(--glow-cyan);
+}
+
+.legend-color.upload {
+    background: var(--accent-magenta);
+    box-shadow: 0 0 10px var(--glow-magenta);
+}
+
 /* Footer */
 .footer {
     text-align: center;

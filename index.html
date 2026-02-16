@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>NET-MONITOR ULTIMATE</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="info-bar">
+            <div class="info-item">IP: <span id="ip-addr">Yükleniyor...</span></div>
+            <div class="info-item">KONUM: <span id="location">...</span></div>
+            <div class="info-item">ISS: <span id="isp">...</span></div>
+        </div>
+
+        <div class="analyzer-box">
+            <canvas id="liveChart"></canvas>
+            <div class="overlay-text" id="status-text">SİSTEM HAZIR</div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="card dl">
+                <div class="label">DOWNLOAD</div>
+                <div class="value" id="dl-val">0.00</div>
+                <div class="unit">Mbps</div>
+            </div>
+            <div class="card ul">
+                <div class="label">UPLOAD</div>
+                <div class="value" id="ul-val">0.00</div>
+                <div class="unit">Mbps</div>
+            </div>
+            <div class="card ping">
+                <div class="label">PING / JITTER</div>
+                <div class="value" id="ping-val">0 / 0</div>
+                <div class="unit">ms</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="start-btn" onclick="startFullTest()">ANALİZİ BAŞLAT</button>
+        </div>
+
+        <div class="terminal" id="logs">
+            <div class="line">> [SYSTEM] Bağlantı analizi için hazır.</div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>

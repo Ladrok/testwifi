@@ -8,10 +8,17 @@ let testResults = { download: 0, upload: 0, ping: 0, jitter: 0, packetLoss: 0 };
 let recentPings = [];
 
 const testConfig = {
-    quick:    { duration: 10, pingInterval: 300 },
-    normal:   { duration: 25, pingInterval: 250 },
-    extended: { duration: 50, pingInterval: 200 }
+    quick:    { duration: 10,  pingInterval: 300 },
+    normal:   { duration: 30,  pingInterval: 250 },
+    extended: { duration: 60,  pingInterval: 200 },
+    tenmin:   { duration: 600, pingInterval: 500 }
 };
+
+const UPLOAD_CHUNK = (() => {
+    const buf = new Uint8Array(512 * 1024);
+    crypto.getRandomValues(buf);
+    return buf;
+})();
 
 document.addEventListener('DOMContentLoaded', () => {
     fetchIPInfo();
@@ -128,7 +135,7 @@ async function startTest() {
     const startTime = Date.now();
 
     startPingLoop(config.pingInterval);
-    updateProgress(startTime, config.duration + 4);
+    updateProgress(startTime, config.duration);
 
     await Promise.all([
         runDownloadTest(config.duration),
@@ -220,9 +227,19 @@ function stopPingLoop() {
 
 function updateProgress(startTime, duration) {
     if (!isTestRunning) return;
-    const pct = Math.min(100, Math.round(((Date.now() - startTime) / (duration * 1000)) * 100));
-    updateStatus(`Test sürüyor... %${pct}`);
-    if (pct < 100) setTimeout(() => updateProgress(startTime, duration), 300);
+    const elapsed = (Date.now() - startTime) / 1000;
+    const pct = Math.min(100, Math.round((elapsed / duration) * 100));
+    if (duration >= 60) {
+        const mins = Math.floor(elapsed / 60);
+        const secs = Math.floor(elapsed % 60);
+        const rem = Math.max(0, duration - elapsed);
+        const remMins = Math.floor(rem / 60);
+        const remSecs = Math.floor(rem % 60);
+        updateStatus(`Test sürüyor... %${pct} (${mins}:${String(secs).padStart(2,'0')} / kalan: ${remMins}:${String(remSecs).padStart(2,'0')})`);
+    } else {
+        updateStatus(`Test sürüyor... %${pct}`);
+    }
+    if (pct < 100) setTimeout(() => updateProgress(startTime, duration), 500);
 }
 
 function runDownloadTest(duration) {
@@ -309,6 +326,7 @@ function runUploadTest(duration) {
         let measurements = [];
         const startTime = Date.now();
         let resolved = false;
+        let activeCount = 0;
 
         const safeResolve = () => {
             if (resolved) return;
@@ -322,43 +340,47 @@ function runUploadTest(duration) {
             resolve();
         };
 
-        setTimeout(safeResolve, (duration + 2) * 1000);
+        setTimeout(safeResolve, (duration + 3) * 1000);
+
+        function buildPayload() {
+            const count = Math.max(2, Math.min(32, Math.ceil(
+                (measurements.length > 0
+                    ? measurements.slice(-3).reduce((a,b) => a+b, 0) / Math.min(3, measurements.length)
+                    : 5) * 125000 / UPLOAD_CHUNK.length
+            )));
+            const buf = new Uint8Array(UPLOAD_CHUNK.length * count);
+            for (let i = 0; i < count; i++) buf.set(UPLOAD_CHUNK, i * UPLOAD_CHUNK.length);
+            return buf;
+        }
 
         function doUpload() {
             if (!isTestRunning || Date.now() - startTime > duration * 1000) {
-                safeResolve();
+                if (activeCount === 0) safeResolve();
                 return;
             }
 
-            const elapsed = (Date.now() - startTime) / 1000;
-            const avgSpeed = measurements.length > 0
-                ? measurements.slice(-5).reduce((a, b) => a + b, 0) / Math.min(5, measurements.length)
-                : 5;
-
-            const targetBytes = Math.max(500000, Math.min(avgSpeed * 125000 * 2, 8000000));
-            const data = new Uint8Array(targetBytes);
-            crypto.getRandomValues(data);
-
+            activeCount++;
+            const payload = buildPayload();
             const xhr = new XMLHttpRequest();
             const reqStart = Date.now();
-            let progressFired = false;
             let lastLoaded = 0;
             let lastTime = reqStart;
+            let gotProgress = false;
 
             xhr.open('POST', 'https://speed.cloudflare.com/__up', true);
-            xhr.timeout = 15000;
+            xhr.timeout = Math.min(20000, (duration * 1000 - (Date.now() - startTime)) + 2000);
 
             xhr.upload.onprogress = e => {
                 if (!isTestRunning) { xhr.abort(); return; }
-                progressFired = true;
+                gotProgress = true;
                 const now = Date.now();
                 const dt = (now - lastTime) / 1000;
-                if (dt > 0.08 && e.loaded > lastLoaded) {
+                if (dt > 0.05 && e.loaded > lastLoaded) {
                     const speed = ((e.loaded - lastLoaded) * 8) / (dt * 1000000);
-                    if (speed > 0.2 && speed < 2000) {
+                    if (speed > 0.1 && speed < 2000) {
                         measurements.push(speed);
                         uploadSpeedData.push(speed);
-                        const recent = measurements.slice(-8);
+                        const recent = measurements.slice(-6);
                         const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
                         testResults.upload = avg;
                         document.getElementById('upload-speed').textContent = `${avg.toFixed(2)} Mbps`;
@@ -369,11 +391,12 @@ function runUploadTest(duration) {
                 }
             };
 
-            xhr.onload = () => {
+            const onDone = () => {
+                activeCount--;
                 const reqDuration = (Date.now() - reqStart) / 1000;
-                if (!progressFired && reqDuration > 0.3) {
-                    const speed = (targetBytes * 8) / (reqDuration * 1000000);
-                    if (speed > 0.1) {
+                if (!gotProgress && reqDuration > 0.2) {
+                    const speed = (payload.length * 8) / (reqDuration * 1000000);
+                    if (speed > 0.1 && speed < 2000) {
                         measurements.push(speed);
                         uploadSpeedData.push(speed);
                         const recent = measurements.slice(-5);
@@ -384,25 +407,22 @@ function runUploadTest(duration) {
                     }
                 }
                 if (isTestRunning && Date.now() - startTime < duration * 1000) {
-                    setTimeout(doUpload, 50);
-                } else {
+                    setTimeout(doUpload, 20);
+                } else if (activeCount === 0) {
                     safeResolve();
                 }
             };
 
-            xhr.onerror = xhr.ontimeout = () => {
-                if (isTestRunning && Date.now() - startTime < duration * 1000) {
-                    setTimeout(doUpload, 300);
-                } else {
-                    safeResolve();
-                }
-            };
+            xhr.onload = onDone;
+            xhr.onerror = () => { activeCount--; if (isTestRunning && Date.now() - startTime < duration * 1000) setTimeout(doUpload, 300); else if (activeCount === 0) safeResolve(); };
+            xhr.ontimeout = () => { activeCount--; if (isTestRunning && Date.now() - startTime < duration * 1000) setTimeout(doUpload, 100); else if (activeCount === 0) safeResolve(); };
 
-            xhr.send(data);
+            xhr.send(payload);
         }
 
-        setTimeout(doUpload, 400);
-        setTimeout(doUpload, 700);
+        setTimeout(doUpload, 200);
+        setTimeout(doUpload, 500);
+        setTimeout(doUpload, 800);
     });
 }
 
@@ -442,7 +462,7 @@ function finalizeStats() {
         const valid = latencyData.filter(p => p < 2000);
         const avg = valid.reduce((a, b) => a + b, 0) / valid.length;
         const variance = valid.reduce((s, p) => s + Math.pow(p - avg, 2), 0) / valid.length;
-        const threshold = Math.max(avg + 2 * Math.sqrt(variance), avg * 1.5);
+        const threshold = Math.max(avg + 3 * Math.sqrt(variance), avg * 2.5);
         const spikes = valid.filter(p => p > threshold).length;
         document.getElementById('spike-count').textContent = spikes;
         document.getElementById('max-ping').textContent = `${Math.max(...valid).toFixed(0)} ms`;
@@ -460,13 +480,14 @@ function drawLatencyGraph() {
 
     const valid = latencyData.filter(p => p < 2000);
     if (valid.length < 2) return;
+    const displayData = valid.slice(-200);
 
-    const maxP = Math.max(...valid);
-    const minP = Math.min(...valid);
-    const avgP = valid.reduce((a, b) => a + b, 0) / valid.length;
+    const maxP = Math.max(...displayData);
+    const minP = Math.min(...displayData);
+    const avgP = displayData.reduce((a, b) => a + b, 0) / displayData.length;
     const range = maxP - minP || 1;
-    const variance = valid.reduce((s, p) => s + Math.pow(p - avgP, 2), 0) / valid.length;
-    const threshold = Math.max(avgP + 2 * Math.sqrt(variance), avgP * 1.5);
+    const variance = displayData.reduce((s, p) => s + Math.pow(p - avgP, 2), 0) / displayData.length;
+    const threshold = Math.max(avgP + 3 * Math.sqrt(variance), avgP * 2.5);
 
     ctx.strokeStyle = '#1e2d45';
     ctx.lineWidth = 1;
@@ -502,17 +523,14 @@ function drawLatencyGraph() {
     }
     ctx.setLineDash([]);
 
-    const step = (W - 2 * P) / (latencyData.length - 1);
+    const step = (W - 2 * P) / Math.max(displayData.length - 1, 1);
 
-    const grad = ctx.createLinearGradient(P, 0, W - P, 0);
-    grad.addColorStop(0, '#00f0ff');
-    grad.addColorStop(1, '#00f0ff');
-    ctx.strokeStyle = grad;
+    ctx.strokeStyle = '#00f0ff';
     ctx.lineWidth = 2;
     ctx.shadowBlur = 6;
     ctx.shadowColor = '#00f0ff';
     ctx.beginPath();
-    latencyData.forEach((p, i) => {
+    displayData.forEach((p, i) => {
         const clampedP = Math.min(p, maxP);
         const x = P + i * step;
         const y = P + (H - 2 * P) * (1 - (clampedP - minP) / range);
@@ -522,7 +540,7 @@ function drawLatencyGraph() {
     ctx.shadowBlur = 0;
 
     ctx.fillStyle = '#ff0055';
-    latencyData.forEach((p, i) => {
+    displayData.forEach((p, i) => {
         if (p > threshold) {
             const x = P + i * step;
             const y = P + (H - 2 * P) * (1 - (Math.min(p, maxP) - minP) / range);
@@ -541,12 +559,14 @@ function drawSpeedViz() {
 
     ctx.clearRect(0, 0, W, H);
 
-    const all = [...downloadSpeedData, ...uploadSpeedData];
+    const dlDisplay = downloadSpeedData.slice(-300);
+    const ulDisplay = uploadSpeedData.slice(-300);
+    const all = [...dlDisplay, ...ulDisplay];
     if (all.length === 0) return;
 
     const maxS = Math.max(...all, 10);
     const gW = W - 2 * P, gH = H - 2 * P;
-    const maxPts = Math.max(downloadSpeedData.length, uploadSpeedData.length, 1);
+    const maxPts = Math.max(dlDisplay.length, ulDisplay.length, 1);
 
     ctx.strokeStyle = '#1e2d45';
     ctx.lineWidth = 1;
@@ -578,8 +598,8 @@ function drawSpeedViz() {
         ctx.shadowBlur = 0;
     }
 
-    drawLine(downloadSpeedData, '#00f0ff', '#00f0ff');
-    drawLine(uploadSpeedData, '#ff00ff', '#ff00ff');
+    drawLine(dlDisplay, '#00f0ff', '#00f0ff');
+    drawLine(ulDisplay, '#ff00ff', '#ff00ff');
 }
 
 function toggleStats() {

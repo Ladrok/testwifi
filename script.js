@@ -128,6 +128,7 @@ async function startTest() {
     const startTime = Date.now();
 
     startPingLoop(config.pingInterval);
+    updateProgress(startTime, config.duration + 4);
 
     await Promise.all([
         runDownloadTest(config.duration),
@@ -217,30 +218,41 @@ function stopPingLoop() {
     }
 }
 
+function updateProgress(startTime, duration) {
+    if (!isTestRunning) return;
+    const pct = Math.min(100, Math.round(((Date.now() - startTime) / (duration * 1000)) * 100));
+    updateStatus(`Test sürüyor... %${pct}`);
+    if (pct < 100) setTimeout(() => updateProgress(startTime, duration), 300);
+}
+
 function runDownloadTest(duration) {
     return new Promise(resolve => {
-        updateStatus('Download + Upload + Ping ölçülüyor...');
         let measurements = [];
         const startTime = Date.now();
         const sizes = [10, 25, 50, 100];
         let sizeIdx = 0;
-        let active = 0;
+        let resolved = false;
+
+        const safeResolve = () => {
+            if (resolved) return;
+            resolved = true;
+            if (measurements.length > 0) {
+                const sorted = [...measurements].sort((a, b) => b - a);
+                const top = sorted.slice(0, Math.min(15, sorted.length));
+                testResults.download = top.reduce((a, b) => a + b, 0) / top.length;
+                document.getElementById('download-speed').textContent = `${testResults.download.toFixed(2)} Mbps`;
+            }
+            resolve();
+        };
+
+        setTimeout(safeResolve, (duration + 2) * 1000);
 
         function doDownload() {
             if (!isTestRunning || Date.now() - startTime > duration * 1000) {
-                if (active === 0) {
-                    if (measurements.length > 0) {
-                        const sorted = [...measurements].sort((a, b) => b - a);
-                        const top = sorted.slice(0, Math.min(15, sorted.length));
-                        testResults.download = top.reduce((a, b) => a + b, 0) / top.length;
-                        document.getElementById('download-speed').textContent = `${testResults.download.toFixed(2)} Mbps`;
-                    }
-                    resolve();
-                }
+                safeResolve();
                 return;
             }
 
-            active++;
             const size = sizes[Math.min(sizeIdx, sizes.length - 1)];
             const xhr = new XMLHttpRequest();
             let lastLoaded = 0;
@@ -248,6 +260,7 @@ function runDownloadTest(duration) {
 
             xhr.open('GET', `https://speed.cloudflare.com/__down?bytes=${size * 1000000}&r=${Math.random()}`, true);
             xhr.responseType = 'arraybuffer';
+            xhr.timeout = 15000;
 
             xhr.onprogress = e => {
                 if (!isTestRunning) { xhr.abort(); return; }
@@ -259,11 +272,11 @@ function runDownloadTest(duration) {
                         measurements.push(speed);
                         downloadSpeedData.push(speed);
                         const recent = measurements.slice(-10);
-                        const peak = recent.reduce((a, b) => a + b, 0) / recent.length;
-                        testResults.download = peak;
-                        document.getElementById('download-speed').textContent = `${peak.toFixed(2)} Mbps`;
-                        document.getElementById('current-speed').textContent = peak.toFixed(0);
-                        drawGauge(peak, 500);
+                        const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+                        testResults.download = avg;
+                        document.getElementById('download-speed').textContent = `${avg.toFixed(2)} Mbps`;
+                        document.getElementById('current-speed').textContent = avg.toFixed(0);
+                        drawGauge(avg, 500);
                         drawSpeedViz();
                     }
                     lastLoaded = e.loaded;
@@ -271,20 +284,23 @@ function runDownloadTest(duration) {
                 }
             };
 
-            xhr.onload = xhr.onerror = xhr.onabort = () => {
-                active--;
+            xhr.onload = xhr.onerror = xhr.ontimeout = () => {
                 if (measurements.length > 5) {
                     const avg = measurements.slice(-5).reduce((a, b) => a + b, 0) / 5;
                     if (avg > 40 && sizeIdx < sizes.length - 1) sizeIdx++;
                 }
-                setTimeout(doDownload, 30);
+                if (isTestRunning && Date.now() - startTime < duration * 1000) {
+                    setTimeout(doDownload, 50);
+                } else {
+                    safeResolve();
+                }
             };
 
             xhr.send();
         }
 
         doDownload();
-        setTimeout(doDownload, 200);
+        setTimeout(doDownload, 300);
     });
 }
 
@@ -292,50 +308,60 @@ function runUploadTest(duration) {
     return new Promise(resolve => {
         let measurements = [];
         const startTime = Date.now();
-        const sizes = [1, 2, 4, 8];
-        let sizeIdx = 0;
-        let active = 0;
+        let resolved = false;
+
+        const safeResolve = () => {
+            if (resolved) return;
+            resolved = true;
+            if (measurements.length > 0) {
+                const sorted = [...measurements].sort((a, b) => b - a);
+                const top = sorted.slice(0, Math.min(10, sorted.length));
+                testResults.upload = top.reduce((a, b) => a + b, 0) / top.length;
+                document.getElementById('upload-speed').textContent = `${testResults.upload.toFixed(2)} Mbps`;
+            }
+            resolve();
+        };
+
+        setTimeout(safeResolve, (duration + 2) * 1000);
 
         function doUpload() {
             if (!isTestRunning || Date.now() - startTime > duration * 1000) {
-                if (active === 0) {
-                    if (measurements.length > 0) {
-                        const sorted = [...measurements].sort((a, b) => b - a);
-                        const top = sorted.slice(0, Math.min(10, sorted.length));
-                        testResults.upload = top.reduce((a, b) => a + b, 0) / top.length;
-                        document.getElementById('upload-speed').textContent = `${testResults.upload.toFixed(2)} Mbps`;
-                    }
-                    resolve();
-                }
+                safeResolve();
                 return;
             }
 
-            active++;
-            const size = sizes[Math.min(sizeIdx, sizes.length - 1)] * 1000000;
-            const data = new Uint8Array(size);
+            const elapsed = (Date.now() - startTime) / 1000;
+            const avgSpeed = measurements.length > 0
+                ? measurements.slice(-5).reduce((a, b) => a + b, 0) / Math.min(5, measurements.length)
+                : 5;
+
+            const targetBytes = Math.max(500000, Math.min(avgSpeed * 125000 * 2, 8000000));
+            const data = new Uint8Array(targetBytes);
             crypto.getRandomValues(data);
 
             const xhr = new XMLHttpRequest();
-            let lastLoaded = 0;
-            let lastTime = Date.now();
             const reqStart = Date.now();
+            let progressFired = false;
+            let lastLoaded = 0;
+            let lastTime = reqStart;
 
             xhr.open('POST', 'https://speed.cloudflare.com/__up', true);
-            xhr.timeout = 12000;
+            xhr.timeout = 15000;
 
             xhr.upload.onprogress = e => {
                 if (!isTestRunning) { xhr.abort(); return; }
+                progressFired = true;
                 const now = Date.now();
                 const dt = (now - lastTime) / 1000;
                 if (dt > 0.08 && e.loaded > lastLoaded) {
                     const speed = ((e.loaded - lastLoaded) * 8) / (dt * 1000000);
-                    if (speed > 0.3 && speed < 2000) {
+                    if (speed > 0.2 && speed < 2000) {
                         measurements.push(speed);
                         uploadSpeedData.push(speed);
                         const recent = measurements.slice(-8);
-                        const peak = recent.reduce((a, b) => a + b, 0) / recent.length;
-                        testResults.upload = peak;
-                        document.getElementById('upload-speed').textContent = `${peak.toFixed(2)} Mbps`;
+                        const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+                        testResults.upload = avg;
+                        document.getElementById('upload-speed').textContent = `${avg.toFixed(2)} Mbps`;
                         drawSpeedViz();
                     }
                     lastLoaded = e.loaded;
@@ -344,39 +370,39 @@ function runUploadTest(duration) {
             };
 
             xhr.onload = () => {
-                if (measurements.length === 0) {
-                    const elapsed = (Date.now() - reqStart) / 1000;
-                    if (elapsed > 0.5) {
-                        const speed = (size * 8) / (elapsed * 1000000);
-                        if (speed > 0.1) {
-                            measurements.push(speed);
-                            uploadSpeedData.push(speed);
-                            testResults.upload = speed;
-                            document.getElementById('upload-speed').textContent = `${speed.toFixed(2)} Mbps`;
-                            drawSpeedViz();
-                        }
+                const reqDuration = (Date.now() - reqStart) / 1000;
+                if (!progressFired && reqDuration > 0.3) {
+                    const speed = (targetBytes * 8) / (reqDuration * 1000000);
+                    if (speed > 0.1) {
+                        measurements.push(speed);
+                        uploadSpeedData.push(speed);
+                        const recent = measurements.slice(-5);
+                        const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+                        testResults.upload = avg;
+                        document.getElementById('upload-speed').textContent = `${avg.toFixed(2)} Mbps`;
+                        drawSpeedViz();
                     }
                 }
-                active--;
-                if (measurements.length > 5) {
-                    const avg = measurements.slice(-5).reduce((a, b) => a + b, 0) / 5;
-                    if (avg > 15 && sizeIdx < sizes.length - 1) sizeIdx++;
+                if (isTestRunning && Date.now() - startTime < duration * 1000) {
+                    setTimeout(doUpload, 50);
+                } else {
+                    safeResolve();
                 }
-                setTimeout(doUpload, 30);
             };
 
-            xhr.onerror = xhr.ontimeout = xhr.onabort = () => {
-                active--;
-                setTimeout(doUpload, 200);
+            xhr.onerror = xhr.ontimeout = () => {
+                if (isTestRunning && Date.now() - startTime < duration * 1000) {
+                    setTimeout(doUpload, 300);
+                } else {
+                    safeResolve();
+                }
             };
 
             xhr.send(data);
         }
 
-        setTimeout(() => {
-            doUpload();
-            setTimeout(doUpload, 300);
-        }, 500);
+        setTimeout(doUpload, 400);
+        setTimeout(doUpload, 700);
     });
 }
 

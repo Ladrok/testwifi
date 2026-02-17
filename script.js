@@ -130,42 +130,56 @@ function tickProgress(t0, dur) {
 
 function startPing(interval) {
     let errors = 0, total = 0;
+    let spikeThreshold = 500;
 
     async function doPing() {
         if (!running) return;
         const t = performance.now();
+        let ms;
         try {
-            await fetch('https://1.1.1.1/cdn-cgi/trace?_=' + Date.now(), { cache: 'no-cache' });
-            const ms = performance.now() - t;
-            total++;
-            if (ms < 3000) {
-                recentPings.push(ms);
-                if (recentPings.length > 80) recentPings.shift();
-                pingData.push(ms);
-
-                const avg = recentPings.reduce((a, b) => a + b) / recentPings.length;
-                res.ping = avg;
-                document.getElementById('ping-value').textContent = avg.toFixed(0) + ' ms';
-
-                if (recentPings.length > 2) {
-                    let s = 0;
-                    for (let i = 1; i < recentPings.length; i++)
-                        s += Math.abs(recentPings[i] - recentPings[i - 1]);
-                    const j = s / (recentPings.length - 1);
-                    res.jitter = j;
-                    document.getElementById('jitter-value').textContent = j.toFixed(1) + ' ms';
-                }
-
-                drawLatency();
-            } else {
-                errors++; total++;
-            }
+            await fetch('https://1.1.1.1/cdn-cgi/trace?_=' + Date.now(), { cache: 'no-cache', signal: AbortSignal.timeout(4000) });
+            ms = performance.now() - t;
         } catch {
-            errors++; total++;
-            pingData.push(999);
+            ms = 4000;
         }
+        total++;
+
+        if (ms < 4000) {
+            recentPings.push(ms);
+            if (recentPings.length > 100) recentPings.shift();
+            pingData.push(ms);
+
+            const avg = recentPings.reduce((a, b) => a + b) / recentPings.length;
+            res.ping = avg;
+            document.getElementById('ping-value').textContent = avg.toFixed(0) + ' ms';
+
+            if (recentPings.length > 2) {
+                let s = 0;
+                for (let i = 1; i < recentPings.length; i++)
+                    s += Math.abs(recentPings[i] - recentPings[i - 1]);
+                const j = s / (recentPings.length - 1);
+                res.jitter = j;
+                document.getElementById('jitter-value').textContent = j.toFixed(1) + ' ms';
+            }
+
+            if (recentPings.length > 5) {
+                const variance = recentPings.reduce((s, p) => s + (p - res.ping) ** 2, 0) / recentPings.length;
+                spikeThreshold = Math.max(res.ping + 3 * Math.sqrt(variance), res.ping * 2.5, 100);
+            }
+
+            drawLatency();
+        } else {
+            errors++;
+            pingData.push(ms);
+            drawLatency();
+        }
+
         res.loss = total > 0 ? (errors / total) * 100 : 0;
-        if (running) pingTimer = setTimeout(doPing, interval);
+        if (!running) return;
+
+        const isSpike = ms > spikeThreshold;
+        const nextDelay = isSpike ? 50 : interval;
+        pingTimer = setTimeout(doPing, nextDelay);
     }
 
     doPing();
@@ -249,7 +263,6 @@ function testUpload(dur) {
         const t0 = Date.now();
         const meas = [];
         let done = false;
-        let active = 0;
 
         const finish = () => {
             if (done) return; done = true;
@@ -263,42 +276,40 @@ function testUpload(dur) {
 
         setTimeout(finish, (dur + 4) * 1000);
 
-        function buildBuf() {
-            const avgSpd = meas.length > 0
-                ? meas.slice(-4).reduce((a, b) => a + b) / Math.min(4, meas.length)
-                : 2;
-            const count = Math.max(2, Math.min(40, Math.ceil(avgSpd * 1e6 / 8 * 0.8 / UL_BUF.length)));
-            const buf = new Uint8Array(UL_BUF.length * count);
-            for (let i = 0; i < count; i++) buf.set(UL_BUF, i * UL_BUF.length);
-            return buf;
+        function getChunkSize() {
+            if (meas.length === 0) return 512 * 1024;
+            const avg = meas.slice(-4).reduce((a, b) => a + b) / Math.min(4, meas.length);
+            if (avg > 100) return 8 * 1024 * 1024;
+            if (avg > 50)  return 4 * 1024 * 1024;
+            if (avg > 20)  return 2 * 1024 * 1024;
+            if (avg > 5)   return 1 * 1024 * 1024;
+            return 512 * 1024;
         }
 
-        function go() {
-            if (!running || Date.now() - t0 > dur * 1000) {
-                if (active === 0) finish();
-                return;
-            }
+        function sendOne() {
+            if (!running || Date.now() - t0 > dur * 1000) { finish(); return; }
 
-            active++;
-            const payload = buildBuf();
+            const size = getChunkSize();
+            const buf = new Uint8Array(size);
+            for (let i = 0; i < size; i += UL_BUF.length)
+                buf.set(UL_BUF.subarray(0, Math.min(UL_BUF.length, size - i)), i);
+
             const xhr = new XMLHttpRequest();
-            const req0 = Date.now();
-            let lastBytes = 0, lastT = req0, gotProgress = false;
+            const req0 = performance.now();
+            let lastBytes = 0, lastT = req0;
 
             xhr.open('POST', 'https://speed.cloudflare.com/__up', true);
-            xhr.timeout = Math.min(15000, Math.max(5000, dur * 1000 - (Date.now() - t0) + 2000));
+            xhr.timeout = 12000;
 
             xhr.upload.onprogress = e => {
                 if (!running) { xhr.abort(); return; }
-                gotProgress = true;
-                const now = Date.now(), dt = (now - lastT) / 1000;
-                if (dt > 0.06 && e.loaded > lastBytes) {
+                const now = performance.now(), dt = (now - lastT) / 1000;
+                if (dt > 0.05 && e.loaded > lastBytes) {
                     const spd = ((e.loaded - lastBytes) * 8) / (dt * 1e6);
-                    if (spd > 0.2 && spd < 2000) {
+                    if (spd > 0.5 && spd < 3000) {
                         meas.push(spd);
                         ulData.push(spd);
-                        const recent = meas.slice(-8);
-                        const avg = recent.reduce((a, b) => a + b) / recent.length;
+                        const avg = meas.slice(-6).reduce((a, b) => a + b) / Math.min(6, meas.length);
                         res.ul = avg;
                         document.getElementById('upload-speed').textContent = avg.toFixed(2) + ' Mbps';
                         drawSpeed();
@@ -308,35 +319,33 @@ function testUpload(dur) {
             };
 
             xhr.onload = () => {
-                active--;
-                const dur2 = (Date.now() - req0) / 1000;
-                if (!gotProgress && dur2 > 0.15) {
-                    const spd = (payload.length * 8) / (dur2 * 1e6);
-                    if (spd > 0.1 && spd < 2000) {
+                const elapsed = (performance.now() - req0) / 1000;
+                if (elapsed > 0.1) {
+                    const spd = (size * 8) / (elapsed * 1e6);
+                    if (spd > 0.1 && spd < 3000) {
                         meas.push(spd);
                         ulData.push(spd);
-                        const avg = meas.slice(-5).reduce((a, b) => a + b) / Math.min(5, meas.length);
+                        const avg = meas.slice(-6).reduce((a, b) => a + b) / Math.min(6, meas.length);
                         res.ul = avg;
                         document.getElementById('upload-speed').textContent = avg.toFixed(2) + ' Mbps';
                         drawSpeed();
                     }
                 }
-                if (running && Date.now() - t0 < dur * 1000) setTimeout(go, 20);
-                else if (active === 0) finish();
+                if (running && Date.now() - t0 < dur * 1000) setTimeout(sendOne, 10);
+                else finish();
             };
 
             xhr.onerror = xhr.ontimeout = () => {
-                active--;
-                if (running && Date.now() - t0 < dur * 1000) setTimeout(go, 300);
-                else if (active === 0) finish();
+                if (running && Date.now() - t0 < dur * 1000) setTimeout(sendOne, 200);
+                else finish();
             };
 
-            xhr.send(payload);
+            xhr.send(buf);
         }
 
-        setTimeout(go, 300);
-        setTimeout(go, 600);
-        setTimeout(go, 900);
+        setTimeout(sendOne, 200);
+        setTimeout(sendOne, 500);
+        setTimeout(sendOne, 800);
     });
 }
 
